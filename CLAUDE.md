@@ -12,3 +12,4 @@
 - Data Engine: Polars exclusively (No Pandas). 
 - Type Safety: Mandatory type hinting for all parameters and return values.
 - Formatting: Double quotes by default; f-strings with single-quoted keys are the only exception.
+- Keep track of relevant imports and packages included in the Python environment to aid in reproducibility of the code
