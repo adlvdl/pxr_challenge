@@ -1,13 +1,13 @@
 import marimo
 
-__generated_with = "0.22.4"
+__generated_with = "0.23.0"
 app = marimo.App()
 
 
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    # Import libraries
+    # Import libraries and define useful functions
     """)
     return
 
@@ -521,10 +521,10 @@ def _(mo):
 
 @app.cell
 def _(pl, process_dataset):
-    train = process_dataset(pl.read_csv("../data/raw/20260403/dose_response_train.csv"))
-    test = process_dataset(pl.read_csv("../data/raw/20260403/dose_response_test.csv"))
-    train_counter = process_dataset(pl.read_csv("../data/raw/20260403/counter_screen_train.csv"))
-    train_single = process_dataset(pl.read_csv("../data/raw/20260403/single_dose_train.csv"))
+    train = process_dataset(pl.read_csv("../data/raw/20260409/dose_response_train.csv"))
+    test = process_dataset(pl.read_csv("../data/raw/20260409/dose_response_test.csv"))
+    train_counter = process_dataset(pl.read_csv("../data/raw/20260409/counter_screen_train.csv"))
+    train_single = process_dataset(pl.read_csv("../data/raw/20260409/single_dose_train.csv"))
     return test, train, train_counter, train_single
 
 
@@ -537,8 +537,10 @@ def _(mo):
     Here we:
     1. Aggregate molecule identifiers: keep `smiles`, `inchi`, `inchikey` as unique entities,
        concatenate all `Molecule Name` and `OCNT Batch` values seen for that molecule.
-    2. Pivot so that each `concentration_M` becomes its own set of columns, computing the
-       **median** of `median_log2_fc`, `cohens_d`, and `log2_fc_estimate` across replicates/batches.
+    2. Add a boolean `is_hit` flag per row: `median_log2_fc > 1` AND `fdr_bh < 0.05`.
+    3. Pivot so that each `concentration_uM` becomes its own set of columns, keeping
+       the **median** of `median_log2_fc` and the `is_hit` flag (true if any replicate
+       is a hit at that concentration).
     """)
     return
 
@@ -574,26 +576,54 @@ def _(pl, train_single):
         )
     )
 
-    # ── Step 2: compute per-(inchikey, concentration_M) medians ──────────────────
+    # Nominal concentration labels (µM): map messy float values to round numbers
+    # so pivot column names are clean (e.g. "median_log2_fc_1" not "median_log2_fc_0.9203")
+    _conc_labels = {99.01: 100, 33.0: 30, 8.251: 10, 0.9803: 1}
+
+    # ── Step 2: add is_hit flag, then aggregate per (inchikey, concentration_uM) ───
+    # is_hit: median_log2_fc > 1 AND fdr_bh < 0.05 at the replicate level.
+    # After grouping, take the median log2fc and propagate hit status with any()
+    # (a compound is a hit at that concentration if any replicate qualifies).
     _agg_values = (
         train_single
-        .with_columns((10**6 *  pl.col("concentration_M")).alias("concentration_uM"))
+        .with_columns(
+            (10**6 * pl.col("concentration_M")).round(4).alias("concentration_uM"),
+            ((pl.col("median_log2_fc") > 1) & (pl.col("fdr_bh") < 0.05)).alias("is_hit"),
+        )
+        .with_columns(
+            pl.col("concentration_uM")
+              .replace(_conc_labels)
+              .alias("concentration_uM")
+        )
         .group_by(["inchikey", "concentration_uM"])
         .agg(
             pl.col("median_log2_fc").median(),
-            pl.col("cohens_d").median(),
-            pl.col("log2_fc_estimate").median(),
+            pl.col("is_hit").any(),
         )
     )
 
     # ── Step 3: pivot so each concentration becomes its own column ───────────────
-    # Polars pivot produces one column per (value_column × unique_concentration).
-    # The column names will be e.g. "median_log2_fc_1e-05", "cohens_d_9.901e-05" …
-    _pivoted = _agg_values.pivot(
-        on="concentration_uM",          # each unique concentration → new column(s)
+    # Pivot the two value columns separately to preserve their native dtypes:
+    # - median_log2_fc: "median" aggregation → float
+    # - is_hit: "first" aggregation → boolean (already one row per group above;
+    #   using "median" would silently cast bool to float 0.0/1.0)
+    _pivoted_fc = _agg_values.pivot(
+        on="concentration_uM",
         index="inchikey",
-        values=["median_log2_fc", "cohens_d", "log2_fc_estimate"],
-        aggregate_function="median",   # already aggregated above, but keeps pivot safe
+        values="median_log2_fc",
+        aggregate_function="median",
+    )
+    _pivoted_hit = _agg_values.pivot(
+        on="concentration_uM",
+        index="inchikey",
+        values="is_hit",
+        aggregate_function="first",
+    )
+    # suffix="_is_hit" makes is_hit pivot columns like "100.0_is_hit";
+    # rename the bare concentration columns from the fc pivot to match: "100.0_log2_fc"
+    _pivoted = _pivoted_fc.join(_pivoted_hit, on="inchikey", how="left", suffix="_is_hit")
+    _pivoted = _pivoted.rename(
+        {c: f"{c}_log2_fc" for c in _pivoted.columns if c != "inchikey" and "_is_hit" not in c}
     )
 
     # ── Step 4: join molecule metadata back ──────────────────────────────────────
@@ -749,9 +779,9 @@ def _(mo):
 
 
 @app.cell
-def _(pl):
-    all_compounds = pl.read_csv("../data/processed/all_compounds_activity_data.csv")
-    return (all_compounds,)
+def _():
+    #all_compounds = pl.read_csv("../data/processed/all_compounds_activity_data.csv")
+    return
 
 
 @app.cell
@@ -795,7 +825,8 @@ def _(pl, plot_df):
 def _(generate_embedding_plot, plot_df_colored):
     generate_embedding_plot(plot_df_colored, x_col="UMAP_x", y_col="UMAP_y", 
                         color_col="color", point_size=6,
-                        title="UMAP ECFP6 Chemical Space")
+                        title="UMAP ECFP6 Chemical Space",
+                        save_path="../plots/1_sar_exploration/umap_ecfp6_chemical_space.png")
     return
 
 
@@ -803,7 +834,146 @@ def _(generate_embedding_plot, plot_df_colored):
 def _(generate_embedding_plot, plot_df_colored):
     generate_embedding_plot(plot_df_colored, x_col="TSNE_x", y_col="TSNE_y", 
                         color_col="color", point_size=6,
-                        title="tSNE ECFP6 Chemical Space")
+                        title="tSNE ECFP6 Chemical Space",
+                        save_path="../plots/1_sar_exploration/tsne_ecfp6_chemical_space.png")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # Compute MMPs
+    """)
+    return
+
+
+@app.cell
+def _(Chem, all_compounds, pl):
+    # Canonicalise SMILES through RDKit before writing the mmpdb input file.
+    # This strips CXSMILES extensions (e.g. atom-map notation "|&1:10,17|")
+    # that Polars would write as extra space-separated tokens, causing mmpdb
+    # to misparse the title column and raise a UNIQUE constraint error in SQLite.
+    _canonical = all_compounds.with_columns(
+        pl.col("smiles")
+          .map_elements(
+              lambda s: Chem.MolToSmiles(Chem.MolFromSmiles(s)),
+              return_dtype=pl.Utf8,
+          )
+          .alias("smiles_canonical")
+    )
+
+    _canonical.select(["smiles_canonical", "inchikey"]).write_csv(
+        "../data/processed/all_compounds_mmp.smi",
+        separator=" ",
+        include_header=False,
+        quote_style="never",
+    )
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Compute Matched Molecular Pairs (MMP)
+
+    Two steps using [mmpdb](https://github.com/rdkit/mmpdb):
+
+    1. **fragment** — breaks each molecule into core/substituent pairs at single
+       rotatable bonds; writes a `.frag` file.
+    2. **index** — finds all pairs of fragments that share the same core (constant
+       part) but differ in one substituent (variable part); writes a `.csv.gz`
+       for easier reading into the notebook.
+
+    Both commands are run as subprocesses so the notebook is self-contained and
+    the full processing pipeline can be reproduced end-to-end.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    import subprocess
+    import sys
+
+    _smi  = "../data/processed/all_compounds_mmp.smi"
+    _frag = "../data/processed/all_compounds_mmp.frag"
+
+    _result = subprocess.run(
+        [sys.executable, "-m", "mmpdblib", "fragment", _smi, "-o", _frag],
+        capture_output=True,
+        text=True,
+    )
+
+    if _result.returncode != 0:
+        raise RuntimeError(f"mmpdb fragment failed:\n{_result.stderr}")
+
+    mo.md(f"**fragment** finished — output: `{_frag}`")
+    return subprocess, sys
+
+
+@app.cell
+def _(mo, subprocess, sys):
+    _frag  = "../data/processed/all_compounds_mmp.frag"
+    _mmpdb = "../data/processed/all_compounds_mmp.mmp.csv.gz"
+
+    _result = subprocess.run(
+        [sys.executable, "-m", "mmpdblib", "index", _frag, "-out csv.gz", "-o", _mmpdb],
+        capture_output=True,
+        text=True,
+    )
+
+    if _result.returncode != 0:
+        raise RuntimeError(f"mmpdb index failed:\n{_result.stderr}")
+
+    mo.md(f"**index** finished — MMP database: `{_mmpdb}`")
+    return
+
+
+@app.cell
+def _(pl):
+    mmp_df = pl.read_csv("../data/processed/all_compounds_mmp.mmp.csv.gz", separator="\t",
+                            has_header=False, new_columns=["smiles1","smiles2", "inchikey1",
+                                                        "inchikey2", "transform", "core" ])
+    mmp_df
+    return (mmp_df,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Once we have all computed MMPs it is normally useful to filter out some of them,
+    based on our definition of what is considered a valid transformation.
+    Here the main filtering step is to only allow MMPs when the variable section (frag) is
+    at most 50% as large as the common section (core).
+    Another typical filter is to restrict the size of the variable section to smaller fragments,
+    but the limit already set by mmdb seems sensible here.
+    Notice we lose the majority of MMPs (from 68K to 2.6K) and that is fine.
+    It is similar idea of varying the similarity threshold value when using fingerprints.
+    """)
+    return
+
+
+@app.cell
+def _(Chem, mmp_df, pl):
+    mmp_df_filtered=mmp_df.with_columns(
+        pl.col("smiles1").map_elements(lambda x: Chem.MolFromSmiles(x).GetNumHeavyAtoms()).alias("n_ha1"),
+        pl.col("smiles2").map_elements(lambda x: Chem.MolFromSmiles(x).GetNumHeavyAtoms()).alias("n_ha2"),
+        pl.col("core").map_elements(lambda x: Chem.MolFromSmiles(x).GetNumHeavyAtoms()).alias("n_ha_core"),
+        pl.col("transform").map_elements(
+            lambda x: (lambda m: m.GetNumHeavyAtoms() if m else None)(Chem.MolFromSmiles(x.split(">>")[0])),
+            return_dtype=pl.Int32,
+        ).alias("n_ha_frag1"),
+        pl.col("transform").map_elements(
+            lambda x: (lambda m: m.GetNumHeavyAtoms() if m else None)(Chem.MolFromSmiles(x.split(">>")[1])),
+            return_dtype=pl.Int32,
+        ).alias("n_ha_frag2"),
+        ).with_columns(
+            (abs(pl.col("n_ha_frag1")-pl.col("n_ha_frag2"))).alias("size_diff_transform"),
+            (pl.max_horizontal(pl.col("n_ha_frag1"), pl.col("n_ha_frag2"))/pl.col("n_ha_core")).alias("core_transform_ratio")
+        ).filter(
+            pl.col("core_transform_ratio")<0.5
+        )
+    mmp_df_filtered
     return
 
 

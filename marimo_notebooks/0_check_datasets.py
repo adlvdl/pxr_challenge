@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.23.0"
 app = marimo.App()
 
 
@@ -21,9 +21,9 @@ def _():
     from rdkit import Chem
     import mols2grid
 
+    #This removes some warnings that appear when calculating INCHIs
     from rdkit import RDLogger 
     RDLogger.DisableLog('rdApp.*')
-
     return Chem, mo, pl
 
 
@@ -98,7 +98,6 @@ def _(pl, process_dataset):
     test          = process_dataset(pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_TEST_BLINDED.csv"))
     train_counter  = process_dataset(pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_counter-assay_TRAIN.csv"))
     train_single   = process_dataset(pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_single_concentration_TRAIN.csv"))
-
     return test, train, train_counter, train_single
 
 
@@ -137,12 +136,19 @@ def _(mo, pl, smi_to_inchi, smitosvg, train: "pl.DataFrame"):
     dup_inchikey = train.group_by("inchikey").len().\
         filter(pl.col("len")>1).get_column("inchikey").to_list()[0]
     smiles = train.filter(pl.col("inchikey")==dup_inchikey).get_column("smiles").to_list()
+    print("IDs: ", train.filter(pl.col("inchikey")==dup_inchikey).get_column("Molecule Name").to_list())
     print("SMILES with same INCHIKEY: \n", smiles[0], "\n", smiles[1])
     print("their INCHIs: \n", smi_to_inchi(smiles[0]), 
             "\n", smi_to_inchi(smiles[1]))
-    mo.Html(smitosvg(smiles[0])+"<br>"+smitosvg(smiles[1]))
 
+    mo.Html(smitosvg(smiles[0])+"<br>"+smitosvg(smiles[1]))
     return (dup_inchikey,)
+
+
+@app.cell
+def _(dup_inchikey, pl, train: "pl.DataFrame"):
+    train.filter(pl.col("inchikey")==dup_inchikey).get_column("Molecule Name").to_list()
+    return
 
 
 @app.cell
@@ -212,8 +218,8 @@ def _(train_single):
 def _(mo):
     mo.md(r"""
     The table shows us that there are many missing rows for Molecule Name in this dataset.
-    It looks like OCNT Batch contains a more stable ID, but with suffixes based on the experiment.
-    So I will just use the INCHIKEY as ID to compare the different datasets.
+    It looks like OCNT Batch contains a more stable ID.
+    So I will mainly use the INCHIKEY as ID to compare the different datasets.
     So first let's check the overlap of this dataset to the main training dataset.
     According to the blog post there should be 2745 compounds from the single dose screen promoted
     to dose response.
@@ -242,7 +248,7 @@ def _(train: "pl.DataFrame", train_single):
 def _(mo):
     mo.md(r"""
     We start seeing the messines in action as different ways to compare overlap gives us different
-    numbers, and none of them are 2745 mentioned in the blog post. The closes is the INCHIKEY which
+    numbers, and none of them add up to 2745, the number mentioned in the blog post. The closest is the INCHIKEY which
     would be my choice in general, as its based on the chemical structure. It is expected that SMILES would
     provide the least number of common occurances due what we mentioned before, different SMILES for the
     same chemical structure.
@@ -357,7 +363,6 @@ def _(test, train: "pl.DataFrame"):
     print("Molecule Name in common: ", len(set(test.get_column("Molecule Name").to_list()).intersection(
         train.get_column("Molecule Name").to_list()
     )))
-
     return
 
 
@@ -423,7 +428,28 @@ def _(pl):
     pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_counter-assay_TRAIN.csv").write_csv("../data/raw/20260403/counter_screen_train.csv")
     pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_structure_TEST_BLINDED.csv").write_csv("../data/raw/20260403/structure_test.csv")
     pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_single_concentration_TRAIN.csv").write_csv("../data/raw/20260403/single_dose_train.csv")
+    return
 
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    # EDIT 2026/04/09
+
+    The datasets at HuggingFace were updated to solve a few of the issues identified in this notebook and
+     reported by other participants. So I download them again but to a separate folder.
+    More info on the changes at https://docs.google.com/document/d/14-2EL4Zk8g3NNO7bi33gA3fHz_ef98bBigunJMH3Ui4/edit?tab=t.0#heading=h.azqdv6g0boyn
+    """)
+    return
+
+
+@app.cell
+def _(pl):
+    pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_TRAIN.csv").write_csv("../data/raw/20260409/dose_response_train.csv")
+    pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_TEST_BLINDED.csv").write_csv("../data/raw/20260409/dose_response_test.csv")
+    pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_counter-assay_TRAIN.csv").write_csv("../data/raw/20260409/counter_screen_train.csv")
+    pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_structure_TEST_BLINDED.csv").write_csv("../data/raw/20260409/structure_test.csv")
+    pl.read_csv("hf://datasets/openadmet/pxr-challenge-train-test/pxr-challenge_single_concentration_TRAIN.csv").write_csv("../data/raw/20260409/single_dose_train.csv")
     return
 
 
