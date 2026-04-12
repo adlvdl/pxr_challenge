@@ -32,3 +32,75 @@ This is a preliminary plan of the work to be done:
 5. Provide predictions for analog set 1: this held out dataset will be unblinded in the middle of the challenge. This will provide important information for how the different models performed prospectively and might suggest alterations before submitting predictions for analog set 2
 
 6. Provide predictions for analog set 2: this will be the final step and will be the set on which the participant will be ranked.
+
+# Repository layout
+
+```
+data/
+  raw/20260409/          # Challenge CSVs (tracked in git — no download needed)
+  processed/             # Derived files produced by notebook 1a
+marimo_notebooks/        # Analysis notebooks (run in order: 1a → 1b → … → 1e)
+plots/1_sar_exploration/ # Static PNG outputs written by the notebooks
+posts/                   # Markdown write-ups of each analysis stage
+html_notebooks/          # Exported HTML snapshots of the notebooks
+```
+
+# Getting started
+
+## Prerequisites
+
+- **Python 3.14** — required; earlier versions are not tested.
+  If you use [pyenv](https://github.com/pyenv/pyenv), the included `.python-version`
+  file will select the correct version automatically.
+- **Git** — to clone the repository.
+
+## Setup
+
+```bash
+# 1. Clone the repo
+git clone <repo-url>
+cd pxr_challenge
+
+# 2. Create a virtual environment and install all dependencies
+python3.14 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+All raw data files are already tracked in git — no separate download step is required.
+
+## Running the notebooks
+
+The notebooks use relative paths (e.g. `../data/...`) and must be launched
+**from inside the `marimo_notebooks/` directory**:
+
+```bash
+cd marimo_notebooks
+marimo run 1a_data_preprocessing.py      # produces data/processed/ files
+marimo run 1b_chemical_space_and_mmp.py
+marimo run 1c_activity_cliffs.py
+marimo run 1d_train_test_exploration.py
+marimo run 1e_scaffold_analysis.py
+```
+
+Run them in order: **1a must be run first** — it writes
+`data/processed/all_compounds_activity_data.csv` and the MMP files that all
+downstream notebooks read as input.
+
+To open a notebook in edit mode (interactive cells, code visible):
+
+```bash
+marimo edit 1a_data_preprocessing.py
+```
+
+## MMP indexing (one-time, slow step)
+
+Notebook `1a` calls `mmpdb fragment` and `mmpdb index` via subprocess.
+Both steps are **skipped automatically if the output files already exist**
+(`data/processed/all_compounds_mmp.frag` and `all_compounds_mmp.mmp.csv.gz`).
+These pre-computed files are tracked in git, so the fragmentation step will be
+skipped on a fresh clone.
+
+If you need to rerun it (e.g. after updating the compound list), delete the
+output files and re-run `1a`.
