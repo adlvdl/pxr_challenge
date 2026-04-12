@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.0"
+__generated_with = "0.23.1"
 app = marimo.App()
 
 
@@ -18,7 +18,7 @@ def _(mo):
     1. Identifies ACs from the **MMP** table (transformation-based cliffs).
     2. Identifies ACs from **pairwise fingerprint similarity** (threshold-based).
     3. Displays an interactive scatter of all ECFP4 cliffs with side-by-side
-       structure rendering on click.
+       structure rendering.
     4. Shows a UMAP of the dose-response subset coloured by pEC50.
 
     **Input:** `data/processed/all_compounds_activity_data.csv` and
@@ -41,6 +41,7 @@ def _():
     import matplotlib.figure
     from matplotlib.colors import LinearSegmentedColormap
     from scipy.stats import gaussian_kde
+    from matplotlib_venn import venn2
 
     from sklearn.decomposition import PCA
     from umap import UMAP
@@ -95,6 +96,7 @@ def _():
         plt,
         rdDepictor,
         rdMolDraw2D,
+        venn2,
     )
 
 
@@ -354,7 +356,7 @@ def _(
                 n_pca = min(50, n_samples - 1)
                 pca = PCA(n_components=n_pca, random_state=42)
                 coords_pca = pca.fit_transform(fp_array)
-            
+
                 tsne = TSNE(n_components=2, random_state=42,
                              perplexity=min(30.0, float(n_samples - 1)),
                              init="pca", learning_rate="auto")
@@ -488,6 +490,15 @@ def _(all_compounds, generate_embedding_plot_continuous, pl):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Similar to the plot on the whole chemical space, most low active compounds tend to
+    cluster together.
+    """)
+    return
+
+
 @app.cell
 def _(mo):
     mo.md(r"""
@@ -532,7 +543,10 @@ def _(mo):
     ## Fingerprint-based activity cliffs
 
     An alternative approach defines a similarity threshold to consider a pair of
-    compounds "similar".  The threshold depends on the fingerprint and metric:
+    compounds "similar".  The threshold depends on the fingerprint and metric, so whenever
+    someone says a Tanimoto similarity value without saying the fingerprint is providing useless
+    information. Based on rule of thumb and previous experience, I generally use the following
+    thresholds to define similar compounds:
 
     - MACCS + Tanimoto → threshold ≈ 0.8
     - ECFP4 + Tanimoto → threshold ≈ 0.4
@@ -560,9 +574,13 @@ def _(
     _sim_maccs = compute_pairwise_similarities(
         _dr_df, id_col="inchikey", fingerprint="maccs", metric="tanimoto",
     )
-    _sim_ecfp4 = compute_pairwise_similarities(
+    _sim_ecfp4_1k = compute_pairwise_similarities(
         _dr_df, id_col="inchikey", fingerprint="ecfp", metric="tanimoto",
         fp_size=1024, radius=2, include_chirality=True,
+    )
+    _sim_ecfp4_4k = compute_pairwise_similarities(
+        _dr_df, id_col="inchikey", fingerprint="ecfp", metric="tanimoto",
+        fp_size=4096, radius=2, include_chirality=True,
     )
     _sim_ecfp6 = compute_pairwise_similarities(
         _dr_df, id_col="inchikey", fingerprint="ecfp", metric="tanimoto",
@@ -570,26 +588,41 @@ def _(
     )
 
     # Relabel ECFP variants by their common names
-    _sim_ecfp4 = _sim_ecfp4.with_columns(pl.lit("ecfp4").alias("fingerprint"))
+    _sim_ecfp4_1k = _sim_ecfp4_1k.with_columns(pl.lit("ecfp4_1k").alias("fingerprint"))
+    _sim_ecfp4_4k = _sim_ecfp4_4k.with_columns(pl.lit("ecfp4_4k").alias("fingerprint"))
     _sim_ecfp6 = _sim_ecfp6.with_columns(pl.lit("ecfp6").alias("fingerprint"))
 
-    pairwise_similarities = pl.concat([_sim_maccs, _sim_ecfp4, _sim_ecfp6])
+    pairwise_similarities = pl.concat([_sim_maccs, _sim_ecfp4_1k, _sim_ecfp4_4k, _sim_ecfp6])
 
     plot_similarity_distributions(
         pairwise_similarities,
         group_col="fingerprint",
-        group_order=["maccs", "ecfp4", "ecfp6"],
-        colors=["#4e79a7", "#f28e2b", "#59a14f"],
+        group_order=["maccs", "ecfp4_1k", "ecfp4_4k", "ecfp6"],
+        colors=["#4e79a7", "#f28e2b", "#e15759", "#59a14f"],
         title="Pairwise similarity distributions — dose-response compounds",
         save_path="../plots/1_sar_exploration/density_sim_fingerprints.png",
     )
     return (pairwise_similarities,)
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    This plot demonstrates how different the similarity value distributions can be for different
+    fingerprints.
+    ECFP6 generally has lower similarity values.
+    Even small changes such as the bit size for ECFP4 (1024 vs 4096) makes a difference, although a small one.
+    It is always useful to check the similarity distribution within a dataset and decide if
+    you need to adapt those rule of thumb thresholds.
+    For the analysis below I decided to keep them.
+    """)
+    return
+
+
 @app.cell
 def _(np, pairwise_similarities, pl):
     """Summary statistics for each fingerprint distribution."""
-    _fp_order = ["maccs", "ecfp4", "ecfp6"]
+    _fp_order = ["maccs", "ecfp4_1k", "ecfp4_4k", "ecfp6"]
     _rows = []
     for _fp in _fp_order:
         _vals = (
@@ -598,13 +631,13 @@ def _(np, pairwise_similarities, pl):
         )
         _rows.append({
             "fingerprint": _fp.upper(),
-            "mean":   round(float(np.mean(_vals)),             3),
-            "median": round(float(np.median(_vals)),           3),
+
             "Q25":    round(float(np.percentile(_vals, 25)),   3),
+            "median": round(float(np.median(_vals)),           3),
             "Q75":    round(float(np.percentile(_vals, 75)),   3),
-            "IQR":    round(float(np.percentile(_vals, 75)) - float(np.percentile(_vals, 25)), 3),
             "p95":    round(float(np.percentile(_vals, 95)),   3),
             "p99":    round(float(np.percentile(_vals, 99)),   3),
+            "p99.9":   round(float(np.percentile(_vals, 99.9)),   3),
         })
     pl.DataFrame(_rows)
     return
@@ -632,7 +665,7 @@ def _(all_compounds, pairwise_similarities, pl):
         .with_columns((pl.col("pEC50_1") - pl.col("pEC50_2")).abs().alias("delta_pEC50"))
     )
 
-    _thresholds = {"maccs": 0.8, "ecfp4": 0.4}
+    _thresholds = {"maccs": 0.8, "ecfp4_1k": 0.4, "ecfp4_4k": 0.4}
     _rows = []
     for _fp, _sim_thresh in _thresholds.items():
         _total_similar = (
@@ -661,12 +694,80 @@ def _(all_compounds, pairwise_similarities, pl):
 
 
 @app.cell
+def _(Path, all_compounds, pairwise_similarities, pl, plt, venn2):
+    """
+    Venn diagram comparing which compound pairs are flagged as activity cliffs
+    by MACCS (Tanimoto ≥ 0.8) vs ECFP4_1k (Tanimoto ≥ 0.4), both requiring
+    |ΔpEC50| ≥ 2.  Each pair is represented as a frozenset of its two InChIKeys
+    so that (A, B) and (B, A) collapse to the same element.
+    """
+    _DELTA_THRESH = 2.0
+
+    _pec50 = (
+        all_compounds.filter(pl.col("pEC50_dr").is_not_null())
+        .select(["inchikey", "pEC50_dr"])
+    )
+
+    _sim_with_delta = (
+        pairwise_similarities
+        .join(_pec50.rename({"inchikey": "ID1", "pEC50_dr": "pEC50_1"}), on="ID1", how="inner")
+        .join(_pec50.rename({"inchikey": "ID2", "pEC50_dr": "pEC50_2"}), on="ID2", how="inner")
+        .with_columns((pl.col("pEC50_1") - pl.col("pEC50_2")).abs().alias("delta_pEC50"))
+    )
+
+    def _cliff_pairs(fp_name: str, sim_thresh: float) -> set[frozenset]:
+        """Return the set of cliff pairs (as frozensets) for a given fingerprint."""
+        rows = (
+            _sim_with_delta
+            .filter(
+                (pl.col("fingerprint") == fp_name)
+                & (pl.col("similarity") >= sim_thresh)
+                & (pl.col("delta_pEC50") >= _DELTA_THRESH)
+            )
+            .select(["ID1", "ID2"])
+            .rows()
+        )
+        return {frozenset(pair) for pair in rows}
+
+    _maccs_cliffs   = _cliff_pairs("maccs",     0.8)
+    _ecfp4_1k_cliffs = _cliff_pairs("ecfp4_1k", 0.4)
+
+    _fig, _ax = plt.subplots(figsize=(5, 4))
+    venn2(
+        subsets=(_maccs_cliffs, _ecfp4_1k_cliffs),
+        set_labels=("MACCS ≥ 0.8", "ECFP4_1k ≥ 0.4"),
+        set_colors=("#4e79a7", "#f28e2b"),
+        alpha=0.6,
+        ax=_ax,
+    )
+    _ax.set_title("Activity cliff overlap — MACCS vs ECFP4_1k\n(|ΔpEC50| ≥ 2)")
+    _fig.tight_layout()
+    _fig.savefig(
+        Path("../plots/1_sar_exploration/venn_cliffs_maccs_ecfp4.png"),
+        dpi=150, bbox_inches="tight",
+    )
+    _fig
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    This also shows another complexity of activity cliff analysis, different fingerprints
+    will identify different ACs, as their definition of similarity can be very different.
+    You can look at consensus cliffs, ACs defined by more than one similarity threshold,
+    in our case that would be 10 out of cumulatively more than 500 ACs.
+    """)
+    return
+
+
+@app.cell
 def _(mo):
     mo.md(r"""
     ## Activity cliff scatter plot (ECFP4, Tanimoto ≥ 0.4)
 
     Each point is an activity cliff: Tanimoto similarity ≥ 0.4 (ECFP4) and
-    |ΔpEC50| ≥ 2 log units.  Click a point to see both molecules drawn side
+    |ΔpEC50| ≥ 2 log units. Hover over a point to see both molecules drawn side
     by side.
     """)
     return
@@ -711,7 +812,7 @@ def _(
     _ecfp4_cliffs = (
         pairwise_similarities
         .filter(
-            (pl.col("fingerprint") == "ecfp4") & (pl.col("similarity") >= _SIM_THRESHOLD)
+            (pl.col("fingerprint") == "ecfp4_1k") & (pl.col("similarity") >= _SIM_THRESHOLD)
         )
         .join(
             _pec50_smiles.rename({"inchikey": "ID1", "pEC50_dr": "pEC50_1",
@@ -731,7 +832,7 @@ def _(
         pl.max_horizontal("pEC50_1", "pEC50_2").alias("max_pEC50")
     )
 
-    _sel = alt.selection_point(fields=["ID1", "ID2"], name="cliff_sel", empty=False)
+    _sel = alt.selection_point(fields=["ID1", "ID2"], name="cliff_sel", empty=False, on="mouseover", nearest=True, clear="mouseout")
 
     _scatter = (
         alt.Chart(cliff_plot_df)
@@ -802,7 +903,7 @@ def _(
                         align-items:center; justify-content:center;
                         color:grey; font-size:14px; border:1px dashed #ccc;
                         border-radius:6px'>
-                Click a point to see the pair of structures
+                Hover over a point to see the pair of structures
             </div>
         """)
     else:
