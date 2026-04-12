@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.0"
+__generated_with = "0.23.1"
 app = marimo.App()
 
 
@@ -26,6 +26,7 @@ def _():
     import polars as pl
     import marimo as mo
     import numpy as np
+    import altair as alt
     from pathlib import Path
     from typing import Optional
 
@@ -42,6 +43,8 @@ def _():
     from umap import UMAP
 
     from rdkit import Chem, RDLogger
+    from rdkit.Chem import rdDepictor, CombineMols
+    from rdkit.Chem.Draw import rdMolDraw2D
 
     from skfp.fingerprints import (
         ECFPFingerprint,
@@ -78,12 +81,15 @@ def _():
         TSNE,
         TopologicalTorsionFingerprint,
         UMAP,
+        alt,
         mo,
         mpatches,
         np,
         nx,
         pl,
         plt,
+        rdDepictor,
+        rdMolDraw2D,
     )
 
 
@@ -751,6 +757,22 @@ def _(generate_embedding_plot, plot_df_colored):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    We see very little structure in the UMAP.
+    There are no large distinct clusters that might suggest structurally distinct
+    series of compounds.
+    Training compounds are very spread out, which shows many different chemical structures
+    where progressed to dose response.
+    Without a more detailed pEC50 labelling it is difficult to show whether highly active compounds
+    are also broadly distributed.
+    We also see test compounds are broadly distributed, although they often come
+    in clumps organized through the periphery of the large blob.
+    """)
+    return
+
+
 @app.cell
 def _(mo):
     mo.md(r"""
@@ -777,13 +799,25 @@ def _(generate_embedding_plot, plot_df_colored):
     return
 
 
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    Similar to the UMAP (not surprisingly), we see little overall structure, and test compounds
+    broadly distributed but often within local clusters
+    """)
+    return
+
+
 @app.cell
 def _(mo):
     mo.md(r"""
     ## MMP network
 
     Nodes: dose-response, counter-screen, and test compounds that have at least
-    one MMP partner.  Edges: filtered MMP pairs (core_transform_ratio < 1.0).
+    one MMP partner.
+
+    Edges: filtered MMP pairs (core_transform_ratio < 1.0).
+
     Node colour encodes dataset membership (same palette as the embedding plots).
     """)
     return
@@ -819,6 +853,201 @@ def _(generate_similarity_network, mmp_df_filtered, pl, plot_df_colored):
         property_col="color", max_edges=15000, color_legend=_legend,
         save_path="../plots/1_sar_exploration/mmp_network.png",
     )
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    That large component would suggest a subset of compounds with structure similarities.
+    However, most of the large components are composed of small molecules, and would not
+    form analog series as they are too diverse.
+    """)
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## Interactive t-SNE embedding
+
+    Same t-SNE projection as above, rebuilt as an interactive Altair chart.
+    The coloring is meant to emphasize the dose response data, while still highlighting test compounds.
+    Hover over a point to see the compound structure and the datasets it belongs to
+    in the side panel.
+    """)
+    return
+
+
+@app.cell
+def _(alt, mo, np, pl, plot_df_colored, plt):
+    # Collect all columns needed.
+    _tsne_plot_df = plot_df_colored.select([
+        "inchikey", "smiles", "molecule_names",
+        "TSNE_x", "TSNE_y",
+        "in_single_dose", "in_dose_response", "in_counter", "in_test",
+        "pEC50_dr", "pEC50_counter",
+    ])
+
+    # Precompute a hex colour for every compound in Python so Altair receives a
+    # single flat column — no layering, no Vega-side scale, no large JSON spec.
+    #   • DR compounds (pEC50_dr not null) → viridis gradient normalised to data range
+    #   • Test-only compounds (in_test & no DR pEC50) → fixed red #e15759
+    #   • Everything else → light grey #d0d0d0
+    _pec50_vals = _tsne_plot_df["pEC50_dr"].to_list()
+    _valid = [v for v in _pec50_vals if v is not None]
+    _pmin, _pmax = min(_valid), max(_valid)
+    _cmap = plt.get_cmap("viridis")
+
+    def _assign_color(pec50_dr: float | None, in_test: bool) -> str:
+        if pec50_dr is not None:
+            norm = (pec50_dr - _pmin) / (_pmax - _pmin)
+            r, g, b, _ = _cmap(float(np.clip(norm, 0, 1)))
+            return f"#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}"
+        if in_test:
+            return "#e15759"
+        return "#d0d0d080"  # 80 = 50% opacity in hex (128/255)
+
+    _colors = [
+        _assign_color(p, t)
+        for p, t in zip(_pec50_vals, _tsne_plot_df["in_test"].to_list())
+    ]
+
+    _tsne_plot_df = _tsne_plot_df.with_columns(
+        pl.Series("point_color", _colors, dtype=pl.Utf8)
+    )
+
+    # Single-layer chart — colour and opacity driven by the precomputed column.
+    _sel = alt.selection_point(
+        fields=["inchikey"], name="tsne_sel", empty=False,
+        on="mouseover", nearest=True, clear="mouseout",
+    )
+
+    _scatter = (
+        alt.Chart(_tsne_plot_df)
+        .mark_circle(size=20)
+        .encode(
+            x=alt.X("TSNE_x:Q", title="t-SNE 1",
+                    axis=alt.Axis(titleFontSize=13, labelFontSize=11)),
+            y=alt.Y("TSNE_y:Q", title="t-SNE 2",
+                    axis=alt.Axis(titleFontSize=13, labelFontSize=11)),
+            # Use precomputed hex colours directly — scale=None tells Altair to
+            # treat the column values as literal colour strings.
+            color=alt.condition(
+                _sel,
+                alt.value("#f5c518"),
+                alt.Color("point_color:N", scale=None, legend=None),
+            ),
+            opacity=alt.condition(
+                _sel,
+                alt.value(1.0),
+                # Grey points are dimmed; coloured points are fully opaque.
+                alt.value(0.75),
+            ),
+            size=alt.condition(_sel, alt.value(90), alt.value(20)),
+            tooltip=[
+                alt.Tooltip("molecule_names:N", title="Name"),
+                alt.Tooltip("inchikey:N",        title="InChIKey"),
+                alt.Tooltip("pEC50_dr:Q",        title="pEC50 DR",      format=".2f"),
+                alt.Tooltip("pEC50_counter:Q",   title="pEC50 counter", format=".2f"),
+            ],
+        )
+        .add_params(_sel)
+        .properties(
+            title="t-SNE ECFP6 chemical space — DR pEC50 (viridis) · test set red · other grey",
+            width=520,
+            height=480,
+        )
+        .configure_title(fontSize=12)
+        .configure_view(stroke="transparent")
+    )
+
+    tsne_interactive_chart = mo.ui.altair_chart(_scatter)
+    tsne_plot_df = _tsne_plot_df
+    return tsne_interactive_chart, tsne_plot_df
+
+
+@app.cell
+def _(Chem, mo, rdDepictor, rdMolDraw2D, tsne_interactive_chart, tsne_plot_df):
+    _PANEL_W = 280
+    _PANEL_H = 220
+
+    def _smi_to_svg(smi: str, width: int = _PANEL_W, height: int = _PANEL_H) -> str:
+        """Render a SMILES as an SVG string via RDKit MolDraw2DSVG."""
+        mol = Chem.MolFromSmiles(smi)
+        if mol is None:
+            return ""
+        rdDepictor.Compute2DCoords(mol)
+        drawer = rdMolDraw2D.MolDraw2DSVG(width, height)
+        drawer.DrawMolecule(mol)
+        drawer.FinishDrawing()
+        return drawer.GetDrawingText()
+
+    def _strip_xml(svg: str) -> str:
+        return svg.split("?>", 1)[-1].strip() if "?>" in svg else svg
+
+    _sel_rows = tsne_interactive_chart.apply_selection(tsne_plot_df)
+
+    if len(_sel_rows) == 0:
+        _panel = mo.Html(f"""
+            <div style='width:{_PANEL_W}px; height:{_PANEL_H + 100}px; display:flex;
+                        align-items:center; justify-content:center;
+                        color:grey; font-size:14px; border:1px dashed #ccc;
+                        border-radius:6px; text-align:center; padding:12px'>
+                Hover over a point to see the compound structure
+            </div>
+        """)
+    else:
+        _r = _sel_rows.row(0, named=True)
+
+        # Dataset membership badges — one per assay the compound appears in.
+        _badge_defs = [
+            ("in_single_dose",  "Single dose",    "#e0e0e0", "#333"),
+            ("in_dose_response","Dose response",  "#6baed6", "#fff"),
+            ("in_counter",      "Counter screen", "#1a3a6b", "#fff"),
+            ("in_test",         "Test set",       "#e15759", "#fff"),
+        ]
+        _badges = "".join(
+            f"<span style='display:inline-block; background:{bg}; color:{fg}; "
+            f"padding:1px 6px; border-radius:3px; font-size:10px; "
+            f"margin-right:4px; margin-bottom:2px'>{lbl}</span>"
+            for key, lbl, bg, fg in _badge_defs if _r[key]
+        )
+
+        # pEC50 lines — only shown when the assay was run and a value is available.
+        _pec50_lines = ""
+        if _r["in_dose_response"]:
+            _val = f"{_r['pEC50_dr']:.2f}" if _r["pEC50_dr"] is not None else "n/a"
+            _pec50_lines += f"<b>pEC50 DR:</b> {_val}<br>"
+        if _r["in_counter"]:
+            _val = f"{_r['pEC50_counter']:.2f}" if _r["pEC50_counter"] is not None else "n/a"
+            _pec50_lines += f"<b>pEC50 counter:</b> {_val}<br>"
+
+        _svg = _smi_to_svg(_r["smiles"])
+        _panel = mo.Html(f"""
+            <div style='width:{_PANEL_W}px; font-family:monospace; font-size:11px'>
+                <div style='padding:6px; background:#f5f5f5; border-radius:4px;
+                            margin-bottom:4px; line-height:1.9'>
+                    <b>{_r['molecule_names'] or _r['inchikey']}</b><br>
+                    {_badges}<br>
+                    {_pec50_lines}
+                </div>
+                {_strip_xml(_svg)}
+            </div>
+        """)
+
+    mo.hstack([tsne_interactive_chart, _panel], align="start")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The interactive helps to show that PXR induction at uM level is widely distributed.
+    There are clusters of mostly low active compounds in the several sections of the plot.
+    This coloring scheme also highlights better than the other plots that test compounds (in red)
+    are found all over the chemical space in our data.
+    """)
     return
 
 

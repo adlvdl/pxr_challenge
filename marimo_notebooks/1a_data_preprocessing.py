@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.0"
+__generated_with = "0.23.1"
 app = marimo.App()
 
 
@@ -321,7 +321,7 @@ def _(mo):
     ## Compute MMP input file
 
     Canonicalise SMILES through RDKit (strips CXSMILES extensions that confuse
-    mmpdb) then write the two-column `.smi` file required by `mmpdb fragment`.
+    `mmpdb`) then write the two-column `.smi` file required by `mmpdb fragment`.
     If the stripping of CXSMILES is not done, it will trip up mmpdb and cause issues.
     Probably another way to solve would have been to use a different separator in the `.smi`
     file and adapt the call to `mmpdb fragment`.

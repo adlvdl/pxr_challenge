@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.0"
+__generated_with = "0.23.1"
 app = marimo.App()
 
 
@@ -21,7 +21,7 @@ def _(mo):
     | `full_scaffold` | For the most part equivalent to a Bemis-Murcko scaffold |
 
     The interactive scatter at the end lets you see which scaffolds are shared
-    between the training and test sets, with on-click structure rendering.
+    between the training and test sets, with on-hover structure rendering.
 
     **Input:** `data/processed/all_compounds_activity_data.csv` (produced by **1a**).
     """)
@@ -387,7 +387,7 @@ def _(mo):
 
     Scaffolds sitting high on the y-axis but far left are test-set enriched (low
     training coverage); scaffolds far right and low are training-enriched.
-    Click a point to see the scaffold structure drawn on the right.
+    Hover over a point to see the scaffold structure drawn on the right.
     """)
     return
 
@@ -398,7 +398,7 @@ def _(alt, mo, pl, scaffold_counts):
         (pl.col("n_test") >= 1) & (pl.col("n_dose_response") >= 1)
     )
 
-    _sel = alt.selection_point(fields=["scaffold_smiles"], name="scaffold_sel", empty=False)
+    _sel = alt.selection_point(fields=["scaffold_smiles"], name="scaffold_sel", empty=False, on="mouseover", nearest=True, clear="mouseout")
 
     _scatter = (
         alt.Chart(_plot_df)
@@ -483,7 +483,7 @@ def _(
                         align-items:center; justify-content:center;
                         color:grey; font-size:14px; border:1px dashed #ccc;
                         border-radius:6px'>
-                Click a point to see the scaffold structure
+                Hover over a point to see the scaffold structure
             </div>
         """)
     else:
@@ -509,6 +509,18 @@ def _(
         """)
 
     mo.hstack([scaffold_coverage_chart, _panel], align="start")
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    This plot finally killed a misconception I had about the test dataset. As I had seen them called
+    analog sets, my mind went directly to analog series. So I was expecting the test set to be based on
+    one or a small number of unique scaffolds, using a small set of hit compounds as reference.
+    That is not the case. Although, the test set molecules are highly similar to at least one compound in
+    the training set as we saw in notebook 1d, they are themselves fairly diverse as we saw in notebook 1b.
+    """)
     return
 
 
