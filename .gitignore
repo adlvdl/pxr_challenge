@@ -209,3 +209,6 @@ __marimo__/
 
 #MacOS
 .DS_Store
+
+# HTML notebook exports (kept locally but not tracked — repo should appear as Python)
+html_notebooks/
