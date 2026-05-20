@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.5"
 app = marimo.App()
 
 
@@ -670,24 +670,29 @@ def _(np, smurff, sp, tempfile):
             # Stored after train() so predict() can reuse the session
             self._predict_session = None
 
-        def train(self, X_train: np.ndarray, y_train: np.ndarray) -> None:
+        def train(self, X_train: np.ndarray, y_train: "np.ndarray | sp.spmatrix") -> None:
             """
             Fit the Macau model via Gibbs sampling.
 
-            Builds a sparse (n_train × 1) matrix from y_train, then runs
-            MacauSession with X_train as row side information.  The resulting
-            PredictSession is stored internally for use by predict().
+            Accepts either a 1-D target array (single-task) or a pre-built sparse
+            (n × k) matrix (multitask).  In the single-task case a sparse (n × 1)
+            COO matrix is constructed automatically, omitting any NaN values.
+            MacauSession uses X_train as row side information.
 
             Args:
                 X_train: 2-D float32 fingerprint matrix, shape (n_train, n_features).
-                y_train: 1-D array of training targets.
+                y_train: 1-D target array, or sparse (n_train × k) target matrix.
             """
-            n = len(y_train)
-            Y_train = sp.coo_matrix(
-                (y_train.flatten().astype(np.float64),
-                 (np.arange(n), np.zeros(n, dtype=int))),
-                shape=(n, 1),
-            )
+            if sp.issparse(y_train):
+                Y_train = y_train.astype(np.float64)
+            else:
+                n = len(y_train)
+                _vals = y_train.flatten().astype(np.float64)
+                _mask = ~np.isnan(_vals)
+                Y_train = sp.coo_matrix(
+                    (_vals[_mask], (np.where(_mask)[0], np.zeros(_mask.sum(), dtype=int))),
+                    shape=(n, 1),
+                )
 
             with tempfile.TemporaryDirectory() as tmpdir:
                 import os, logging
@@ -802,8 +807,9 @@ def _(Optional, Path, np, pl, shutil, subprocess, sys, tempfile, torch):
             df = pl.DataFrame({"smiles": smiles})
         df.write_csv(path)
 
-    # Single log file for all chemprop CLI calls — appended across folds.
-    _CHEMPROP_LOG = Path(tempfile.gettempdir()) / "chemprop_cli.log"
+    # Log file for all chemprop CLI calls — persisted in project logs/ folder.
+    _CHEMPROP_LOG = Path("../logs/chemprop_cli.log")
+    _CHEMPROP_LOG.parent.mkdir(parents=True, exist_ok=True)
 
     def _run_chemprop_cli(args: list[str]) -> None:
         """
@@ -1363,7 +1369,8 @@ def _(Path, json, np, subprocess, sys, tempfile):
     os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
     os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-    _API_LOG = os.path.join(tempfile.gettempdir(), "chemprop_api.log")
+    _API_LOG = os.path.join("logs", "chemprop_api.log")
+    os.makedirs("logs", exist_ok=True)
     def _log(msg):
         ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
         line = f"{ts} - {msg}\\n"
@@ -1460,7 +1467,8 @@ def _(Path, json, np, subprocess, sys, tempfile):
     os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
     os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
-    _API_LOG = os.path.join(tempfile.gettempdir(), "chemprop_api.log")
+    _API_LOG = os.path.join("logs", "chemprop_api.log")
+    os.makedirs("logs", exist_ok=True)
     def _log(msg):
         from datetime import datetime, timezone
         ts = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
@@ -2392,7 +2400,7 @@ def _(Optional, Path, math, np, plt, rm_tukey_hsd, sns):
             fig.savefig(save_path, dpi=300, bbox_inches='tight')
         return fig
 
-    return (make_mcs_plot_grid,)
+    return make_mcs_plot_grid, mcs_plot
 
 
 @app.cell
@@ -2648,7 +2656,14 @@ def _(
 
 
 @app.cell
-def _(calc_regression_metrics, fp_cmp_pred_df, make_mcs_plot_grid, mo, pl):
+def _(
+    Path,
+    calc_regression_metrics,
+    fp_cmp_pred_df,
+    make_mcs_plot_grid,
+    mo,
+    pl,
+):
     """
     Summarise the fingerprint × model comparison with a mean metrics table
     and MCS heatmaps (Tukey HSD) for MAE, R² and ρ.
@@ -2697,6 +2712,9 @@ def _(calc_regression_metrics, fp_cmp_pred_df, make_mcs_plot_grid, mo, pl):
         pl.col("method").map_elements(_shorten, return_dtype=pl.String)
     )
 
+    _PLOTS_DIR = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
     _fig = make_mcs_plot_grid(
         _metrics_plot,
         stats=["mae"],
@@ -2704,6 +2722,7 @@ def _(calc_regression_metrics, fp_cmp_pred_df, make_mcs_plot_grid, mo, pl):
         figsize=(10, 10),
         effect_dict={"mae": 0.1, "mse": 0.2},
         sort_axes=True,
+        save_path=_PLOTS_DIR / "analysis1_mcs_mae.png",
     )
 
     mo.vstack([
@@ -3111,7 +3130,14 @@ def _(
 
 
 @app.cell
-def _(calc_regression_metrics, make_mcs_plot_grid, mo, pl, pred_df_pretrain):
+def _(
+    Path,
+    calc_regression_metrics,
+    make_mcs_plot_grid,
+    mo,
+    pl,
+    pred_df_pretrain,
+):
     """
     Compute per-fold metrics and display a summary table + MCS heatmaps.
     """
@@ -3143,6 +3169,9 @@ def _(calc_regression_metrics, make_mcs_plot_grid, mo, pl, pred_df_pretrain):
         pl.col("method").map_elements(_shorten, return_dtype=pl.String)
     )
 
+    _PLOTS_DIR = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
     _fig = make_mcs_plot_grid(
         _metrics_plot,
         stats=["mae"],
@@ -3150,6 +3179,7 @@ def _(calc_regression_metrics, make_mcs_plot_grid, mo, pl, pred_df_pretrain):
         figsize=(10, 10),
         effect_dict={"mae": 0.2, "mse": 0.2},
         sort_axes=True,
+        save_path=_PLOTS_DIR / "analysis2_mcs_mae.png",
     )
 
     mo.vstack([
@@ -3316,11 +3346,11 @@ def _(
             _sens_df.write_csv(_f)
         print(f"Saved → {_SENSITIVITY_PATH}")
 
-    # ── Plot: one panel per parameter, three lines (time / MAE / ρ) ───────────
+    # ── Plot: one panel per parameter, two lines (time / MAE) ────────────────
     _params = list(_PARAM_GRID.keys())
-    _ncols = 4
+    _ncols = 2
     _nrows = -(-len(_params) // _ncols)
-    _fig_s, _axes = plt.subplots(_nrows, _ncols, figsize=(20, 5 * _nrows))
+    _fig_s, _axes = plt.subplots(_nrows, _ncols, figsize=(12, 5 * _nrows))
     _axes = _axes.flatten()
 
     for _i, _param in enumerate(_params):
@@ -3330,13 +3360,9 @@ def _(
 
         _ax  = _axes[_i]
         _ax2 = _ax.twinx()
-        _ax3 = _ax.twinx()
-        # Offset the third axis so it doesn't overlap ax2
-        _ax3.spines["right"].set_position(("axes", 1.18))
 
-        _ax.plot(_xpos,  _sub["train_sec"], marker="D", color="tab:green",  label="time (s)")
-        _ax2.plot(_xpos, _sub["mae"],       marker="o", color="tab:blue",   label="MAE", linestyle="--")
-        _ax3.plot(_xpos, _sub["rho"],       marker="s", color="tab:orange", label="ρ",   linestyle=":")
+        _ax.plot(_xpos,  _sub["train_sec"], marker="D", color="tab:green", label="time (s)")
+        _ax2.plot(_xpos, _sub["mae"],       marker="o", color="tab:blue",  label="MAE", linestyle="--")
 
         _ax.set_xticks(_xpos)
         _ax.set_xticklabels(_xticks, rotation=30, ha="right", fontsize=8)
@@ -3344,10 +3370,8 @@ def _(
         _ax.set_xlabel("value")
         _ax.set_ylabel("train time (s)", color="tab:green")
         _ax2.set_ylabel("MAE",           color="tab:blue")
-        _ax3.set_ylabel("ρ",             color="tab:orange")
         _ax.tick_params(axis="y", labelcolor="tab:green")
         _ax2.tick_params(axis="y", labelcolor="tab:blue")
-        _ax3.tick_params(axis="y", labelcolor="tab:orange")
 
         # Mark the default value
         _default_str = str(float(_DEFAULTS[_param]))
@@ -3358,9 +3382,13 @@ def _(
     for _j in range(len(_params), len(_axes)):
         _axes[_j].set_visible(False)
 
-    _fig_s.suptitle("Sensitivity scan — training time / MAE / ρ per parameter (80/20 split)",
+    _fig_s.suptitle("Sensitivity scan — training time / MAE per parameter (80/20 split)",
                      fontsize=13)
     _fig_s.tight_layout()
+
+    _PLOTS_DIR = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+    _fig_s.savefig(_PLOTS_DIR / "sensitivity_scan.png", dpi=150, bbox_inches="tight")
 
     mo.vstack([
         mo.md("## Sensitivity scan results"),
@@ -3472,6 +3500,7 @@ def _(
     gc,
     generate_cv_splits_random,
     gzip,
+    make_mcs_plot_grid,
     mo,
     pl,
     pretrain_dr_train,
@@ -3584,6 +3613,19 @@ def _(
     )
     _sig = _result_tab[_result_tab["p-adj"] < 0.05]
 
+    _PLOTS_DIR = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    _fig = make_mcs_plot_grid(
+        _metrics,
+        stats=["mae"],
+        group_col="method",
+        figsize=(8, 8),
+        effect_dict={"mae": 0.1},
+        sort_axes=True,
+        save_path=_PLOTS_DIR / "hpo_mcs_mae.png",
+    )
+
     mo.vstack([
         mo.md("## HPO best params — 5×5 CV vs baselines (sorted by MAE)"),
         mo.plain_text(_summary.to_pandas().to_string(index=False)),
@@ -3592,6 +3634,8 @@ def _(
             _sig[["group1", "group2", "meandiff", "p-adj"]].to_string()
             if len(_sig) > 0 else "  No significant differences"
         ),
+        mo.md("### MCS grid — MAE"),
+        mo.as_html(_fig),
     ])
     return
 
@@ -3599,17 +3643,12 @@ def _(
 @app.cell
 def _(mo):
     mo.md(r"""
-    # Analysis 3 — TabPFN on top-3 fingerprints
+    # Analysis 3 — TabPFN on MQN and Mordred fingerprints
 
-    TabPFN is evaluated on the same three fingerprints and compared to:
+    TabPFN is evaluated on MQN, Mordred and CheMeleon and compared to the
+    corresponding RF and XGBoost results from Analysis 1 (`4_fp_model_comparison_1.csv.gz`).
 
-    - **RF** results from the notebook-3 fingerprint sweep (`3_rf_fingerprint_comparison.csv.gz`)
-      for `mordred_base`, `mqn`, and `chemeleon`
-    - **CheMeleon** fine-tuned model results from notebook-2 baseline
-      (`2_ml_baseline_5x5cv_random_predictions.csv.gz`, model = `chemeleon`)
-
-    TabPFN runs entirely on CPU to avoid MPS out-of-memory errors that occur
-    when the full CV training set (~3 300 samples) is loaded into the MPS context.
+    TabPFN runs on CPU to avoid MPS out-of-memory errors.
     All comparisons use the same 5×5 CV splits (seed=42).
     """)
     return
@@ -3644,22 +3683,32 @@ def _(
     tempfile,
     tqdm,
 ):
+    """
+    Run TabPFN on MQN, Mordred and CheMeleon fingerprints using 5×5 CV.
 
+    Predictions are checkpointed fold-by-fold and saved to
+    predictions/4_fp_model_comparison_2.csv.gz once both methods are complete.
+    TabPFN runs as a subprocess on CPU to avoid MPS out-of-memory errors.
+    """
     _TARGET_COL3   = "pEC50_dr"
     _PRED_PATH3_GZ = Path("../predictions/4_fp_model_comparison_2.csv.gz")
+    _CKPT3_PATH    = _PRED_PATH3_GZ.with_suffix(".ckpt.gz")
     _N_OUTER3 = 5
     _N_INNER3 = 5
     _SEED3    = 42
     _P_VAL3   = 0.1
+    _N_FOLDS3 = _N_OUTER3 * _N_INNER3
+    _FPS3     = ["mqn", "mordred", "chemeleon"]
+    _EXPECTED3 = {f"tabpfn_{fp}" for fp in _FPS3}
 
-    # ── TabPFN subprocess (CPU to avoid MPS OOM) ─────────────────────────────
+    # ── TabPFN subprocess script ──────────────────────────────────────────────
     # torch.set_num_threads uses all logical CPUs (P-cores + E-cores on Apple
     # Silicon) instead of PyTorch's default of P-cores only.
-    _TABPFN3_SCRIPT_LINES = [
+    _SCRIPT_PATH = Path(tempfile.gettempdir()) / "tabpfn_a3.py"
+    _SCRIPT_PATH.write_text("\n".join([
         "import os, sys, numpy as np",
         "os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'",
-        "from dotenv import load_dotenv",
-        "from pathlib import Path",
+        "from dotenv import load_dotenv; from pathlib import Path",
         "load_dotenv(Path('.env'))",
         "import torch",
         "torch.set_num_threads(max(1, (os.cpu_count() or 1) - 1))",
@@ -3671,24 +3720,16 @@ def _(
         "model = TabPFNRegressor(n_estimators=8, ignore_pretraining_limits=True, device='cpu')",
         "model.fit(X_train, y_train)",
         "np.save(out, model.predict(X_test))",
-    ]
-    _TABPFN3_SCRIPT_PATH = Path(tempfile.gettempdir()) / "tabpfn_a3.py"
-    _TABPFN3_SCRIPT_PATH.write_text("\n".join(_TABPFN3_SCRIPT_LINES))
+    ]))
 
     def _tabpfn3_predict(X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray) -> np.ndarray:
         tmp = Path(tempfile.gettempdir())
-        f_Xtr = tmp / "a3_tabpfn_Xtr.npy"
-        f_ytr = tmp / "a3_tabpfn_ytr.npy"
-        f_Xte = tmp / "a3_tabpfn_Xte.npy"
-        f_out = tmp / "a3_tabpfn_preds"
-        np.save(str(f_Xtr), X_train)
-        np.save(str(f_ytr), y_train)
-        np.save(str(f_Xte), X_test)
+        f_Xtr, f_ytr, f_Xte = tmp / "a3_Xtr.npy", tmp / "a3_ytr.npy", tmp / "a3_Xte.npy"
+        f_out = tmp / "a3_preds"
+        np.save(str(f_Xtr), X_train); np.save(str(f_ytr), y_train); np.save(str(f_Xte), X_test)
         res = subprocess.run(
-            [sys.executable, str(_TABPFN3_SCRIPT_PATH),
-             str(f_Xtr), str(f_ytr), str(f_Xte), str(f_out)],
-            capture_output=True, text=True,
-            cwd=str(Path("../").resolve()),
+            [sys.executable, str(_SCRIPT_PATH), str(f_Xtr), str(f_ytr), str(f_Xte), str(f_out)],
+            capture_output=True, text=True, cwd=str(Path("../").resolve()),
         )
         if res.returncode != 0:
             raise RuntimeError(f"TabPFN subprocess failed:\n{res.stderr}")
@@ -3697,91 +3738,78 @@ def _(
             p.unlink(missing_ok=True)
         return preds
 
-    _EXPECTED3 = {"tabpfn_mordred", "tabpfn_mqn", "tabpfn_chemeleon"}
+    def _checkpoint3(records: list[dict]) -> None:
+        if not records:
+            return
+        _CKPT3_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(_CKPT3_PATH, "wb") as _f:
+            pl.DataFrame(records).write_csv(_f)
+
+    # ── Check completion ──────────────────────────────────────────────────────
     _is_complete3 = (
         _PRED_PATH3_GZ.exists()
-        and set(pl.read_csv(_PRED_PATH3_GZ)["method"].unique().to_list()) >= _EXPECTED3
+        and _EXPECTED3 <= set(pl.read_csv(_PRED_PATH3_GZ)["method"].unique().to_list())
     )
 
     if _is_complete3:
-        print(f"Complete predictions found at {_PRED_PATH3_GZ} — skipping.")
+        print(f"All methods complete — loading {_PRED_PATH3_GZ}.")
         tabpfn_pred_df = pl.read_csv(_PRED_PATH3_GZ)
     else:
+        # Seed accumulator from final file (already-done methods) or checkpoint
         if _PRED_PATH3_GZ.exists():
-            _PRED_PATH3_GZ.unlink()
-        _CKPT3_PATH = _PRED_PATH3_GZ.with_suffix(".ckpt.gz")
-        _n_folds3 = _N_OUTER3 * _N_INNER3
-
-        if _CKPT3_PATH.exists():
-            _all3: list[dict] = pl.read_csv(_CKPT3_PATH).to_dicts()
-            _ckpt3_df = pl.DataFrame(_all3)
-            # Fully complete methods (all 25 folds) can be skipped entirely
-            _fold_counts3 = (
-                _ckpt3_df.group_by("method")
-                .agg(pl.col("fold").n_unique().alias("n"))
-            )
-            _done3 = {r["method"] for r in _fold_counts3.to_dicts() if r["n"] >= _n_folds3}
-            # Partially done methods: track which fold indices are already saved
-            _done_folds3: dict[str, set[int]] = {
-                r["method"]: set(
-                    _ckpt3_df.filter(pl.col("method") == r["method"])["fold"].unique().to_list()
-                )
-                for r in _fold_counts3.to_dicts() if r["n"] < _n_folds3
-            }
-            print(f"Resuming — complete: {sorted(_done3)}  partial: "
-                  f"{ {m: len(f) for m, f in _done_folds3.items()} }")
+            _all3: list[dict] = pl.read_csv(_PRED_PATH3_GZ).to_dicts()
+        elif _CKPT3_PATH.exists():
+            _all3 = pl.read_csv(_CKPT3_PATH).to_dicts()
         else:
             _all3 = []
-            _done3: set[str] = set()
-            _done_folds3: dict[str, set[int]] = {}
-            _ckpt3_df = pl.DataFrame()
 
-        def _checkpoint3(records: list[dict]) -> None:
-            if not records:
-                return
-            _CKPT3_PATH.parent.mkdir(parents=True, exist_ok=True)
-            with gzip.open(_CKPT3_PATH, "wb") as _f:
-                pl.DataFrame(records).write_csv(_f)
+        # Which methods and folds are already saved
+        _done_methods3: set[str] = {
+            m for m in _EXPECTED3
+            if sum(1 for r in _all3 if r["method"] == m and r["fold"]) >= _N_FOLDS3
+        }
+        _done_folds3_by_method: dict[str, set[int]] = {
+            f"tabpfn_{fp}": {r["fold"] for r in _all3 if r["method"] == f"tabpfn_{fp}"}
+            for fp in _FPS3
+        }
 
-        # ── pass 1: TabPFN on mqn, mordred (subprocess) ── mqn first (fastest)
-        for _fp_col3, _fp_type3 in [("mqn", "mqn"), ("mordred", "mordred")]:
-            _method3 = f"tabpfn_{_fp_col3}"
-            if _method3 in _done3:
-                print(f"tabpfn/{_fp_col3} already complete — skipping.")
+        for _fp in _FPS3:
+            _method = f"tabpfn_{_fp}"
+            _done_folds = _done_folds3_by_method[_method]
+            if len(_done_folds) >= _N_FOLDS3:
+                print(f"{_method} already complete — skipping.")
                 continue
-            # Seed strategy records from checkpoint for partial resume
-            _completed_folds3 = _done_folds3.get(_method3, set())
-            _strategy3: list[dict] = (
-                _ckpt3_df.filter(pl.col("method") == _method3).to_dicts()
-                if _completed_folds3 and len(_ckpt3_df) > 0 else []
-            )
-            if _completed_folds3:
-                print(f"tabpfn/{_fp_col3}: resuming from fold {len(_completed_folds3)}/25")
+            if _done_folds:
+                print(f"Resuming {_method} from fold {len(_done_folds)}/{_N_FOLDS3}")
 
-            _remaining3 = [
+            _remaining = [
                 t for t in generate_cv_splits_random(
                     tabpfn_train, n_outer=_N_OUTER3, n_inner=_N_INNER3,
                     seed=_SEED3, p_val=_P_VAL3,
                 )
-                if t[0] not in _completed_folds3
+                if t[0] not in _done_folds
             ]
-            _pbar3 = tqdm(
-                _remaining3,
-                total=_n_folds3 - len(_completed_folds3),
-                desc=f"CV tabpfn/{_fp_col3}", unit="fold",
-            )
-            for _fold3, _outer3, _inner3, _train3, _, _test3 in _pbar3:
-                _y_train3 = _train3[_TARGET_COL3].to_numpy()
-                _y_true3  = _test3[_TARGET_COL3].to_numpy()
-                _train_fp3 = generate_fingerprint(_train3, _fp_type3)
-                _test_fp3  = generate_fingerprint(_test3,  _fp_type3)
-                _Xtr3 = extract_fp_matrix(_train_fp3, _fp_type3)
-                _Xte3 = extract_fp_matrix(_test_fp3,  _fp_type3)
-                del _train_fp3, _test_fp3
-                if np.isnan(_Xtr3).any():
-                    _valid3 = ~np.isnan(_Xtr3).any(axis=0)
-                    _Xtr3 = _Xtr3[:, _valid3]
-                    _Xte3 = _Xte3[:, _valid3]
+            for _fold3, _outer3, _inner3, _train3, _, _test3 in tqdm(
+                _remaining,
+                total=_N_FOLDS3 - len(_done_folds),
+                desc=f"CV {_method}", unit="fold",
+            ):
+                _y_train3  = _train3[_TARGET_COL3].to_numpy()
+                _y_true3   = _test3[_TARGET_COL3].to_numpy()
+                if _fp == "chemeleon":
+                    _Xtr3, _Xte3 = chemeleon_embed(
+                        _train3["smiles"].to_list(), _test3["smiles"].to_list(),
+                        prefix="a3_che",
+                    )
+                else:
+                    _train_fp3 = generate_fingerprint(_train3, _fp)
+                    _test_fp3  = generate_fingerprint(_test3,  _fp)
+                    _Xtr3 = extract_fp_matrix(_train_fp3, _fp)
+                    _Xte3 = extract_fp_matrix(_test_fp3,  _fp)
+                    del _train_fp3, _test_fp3
+                    if np.isnan(_Xtr3).any():
+                        _valid = ~np.isnan(_Xtr3).any(axis=0)
+                        _Xtr3, _Xte3 = _Xtr3[:, _valid], _Xte3[:, _valid]
                 _y_pred3 = _tabpfn3_predict(_Xtr3, _y_train3, _Xte3)
                 del _Xtr3, _Xte3
                 gc.collect()
@@ -3789,98 +3817,51 @@ def _(
                     _test3["inchikey"].to_list(), _test3["molecule_names"].to_list(),
                     _test3["smiles"].to_list(), _y_true3.tolist(), _y_pred3.tolist(),
                 ):
-                    _strategy3.append({
+                    _all3.append({
                         "inchikey": _ik3, "molecule_names": _mn3, "smiles": _smi3,
                         "fold": _fold3, "outer_fold": _outer3, "inner_fold": _inner3,
-                        "model": "tabpfn", "fingerprint": _fp_col3,
-                        "method": _method3, "y_true": _yt3, "y_pred": _yp3,
+                        "model": "tabpfn", "fingerprint": _fp,
+                        "method": _method, "y_true": _yt3, "y_pred": _yp3,
                     })
-                # Checkpoint after every fold
-                _checkpoint3(_all3 + _strategy3)
-            _all3.extend(_strategy3)
-            print(f"tabpfn/{_fp_col3} done — {len(_all3):,} records so far")
-
-        # ── pass 2: TabPFN on chemeleon ────────────────────────────────────────
-        if "tabpfn_chemeleon" in _done3:
-            print("tabpfn/chemeleon already complete — skipping.")
-        else:
-            _completed_folds3_ch = _done_folds3.get("tabpfn_chemeleon", set())
-            _strategy3_ch: list[dict] = (
-                _ckpt3_df.filter(pl.col("method") == "tabpfn_chemeleon").to_dicts()
-                if _completed_folds3_ch and len(_ckpt3_df) > 0 else []
-            )
-            if _completed_folds3_ch:
-                print(f"tabpfn/chemeleon: resuming from fold {len(_completed_folds3_ch)}/25")
-            _remaining3_ch = [
-                t for t in generate_cv_splits_random(
-                    tabpfn_train, n_outer=_N_OUTER3, n_inner=_N_INNER3,
-                    seed=_SEED3, p_val=_P_VAL3,
-                )
-                if t[0] not in _completed_folds3_ch
-            ]
-            _pbar3ch = tqdm(
-                _remaining3_ch,
-                total=_n_folds3 - len(_completed_folds3_ch),
-                desc="CV tabpfn/chemeleon", unit="fold",
-            )
-            for _fold3, _outer3, _inner3, _train3, _, _test3 in _pbar3ch:
-                _y_train3 = _train3[_TARGET_COL3].to_numpy()
-                _y_true3  = _test3[_TARGET_COL3].to_numpy()
-                _Xtr3_ch, _Xte3_ch = chemeleon_embed(
-                    _train3["smiles"].to_list(), _test3["smiles"].to_list(),
-                    prefix="a3",
-                )
-                _y_pred3 = _tabpfn3_predict(_Xtr3_ch, _y_train3, _Xte3_ch)
-                del _Xtr3_ch, _Xte3_ch
-                gc.collect()
-                for _ik3, _mn3, _smi3, _yt3, _yp3 in zip(
-                    _test3["inchikey"].to_list(), _test3["molecule_names"].to_list(),
-                    _test3["smiles"].to_list(), _y_true3.tolist(), _y_pred3.tolist(),
-                ):
-                    _strategy3_ch.append({
-                        "inchikey": _ik3, "molecule_names": _mn3, "smiles": _smi3,
-                        "fold": _fold3, "outer_fold": _outer3, "inner_fold": _inner3,
-                        "model": "tabpfn", "fingerprint": "chemeleon",
-                        "method": "tabpfn_chemeleon", "y_true": _yt3, "y_pred": _yp3,
-                    })
-                # Checkpoint after every fold
-                _checkpoint3(_all3 + _strategy3_ch)
-            _all3.extend(_strategy3_ch)
-            print(f"tabpfn/chemeleon done — {len(_all3):,} records so far")
+                _checkpoint3(_all3)
+            print(f"{_method} done.")
 
         _PRED_PATH3_GZ.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(_PRED_PATH3_GZ, "wb") as _f:
             pl.DataFrame(_all3).write_csv(_f)
         _CKPT3_PATH.unlink(missing_ok=True)
-        print(f"All done — {len(_all3):,} rows → {_PRED_PATH3_GZ}")
+        print(f"Done — {len(_all3):,} rows → {_PRED_PATH3_GZ}")
 
-    tabpfn_pred_df = pl.read_csv(_PRED_PATH3_GZ)
+        tabpfn_pred_df = pl.read_csv(_PRED_PATH3_GZ)
     return (tabpfn_pred_df,)
 
 
 @app.cell
-def _(calc_regression_metrics, make_mcs_plot_grid, mo, pl, tabpfn_pred_df):
+def _(
+    Path,
+    calc_regression_metrics,
+    make_mcs_plot_grid,
+    mo,
+    pl,
+    tabpfn_pred_df,
+):
     """
-    Compare TabPFN to RF (notebook-3 fingerprint sweep) and CheMeleon
-    fine-tuned model (notebook-2 baseline) using the same 5×5 CV splits.
+    Compare TabPFN against RF (Mordred only) and CheMeleon baseline from notebook 2.
     """
-    # ── load baseline results from prior notebooks ─────────────────────────
-    _rf_ref = (
-        pl.read_csv("../predictions/3_rf_fingerprint_comparison.csv.gz")
-        .filter(pl.col("model").is_in(["mordred_base", "mqn", "chemeleon"]))
-        .rename({"model": "method", "fold": "cv_cycle"})
-        .with_columns([
-            pl.col("method").replace({"mordred_base": "rf_mordred", "mqn": "rf_mqn",
-                                      "chemeleon": "rf_chemeleon"}),
-            pl.lit("random").alias("split"),
-        ])
+    # ── RF Mordred baseline from Analysis 1 ──────────────────────────────────
+    _a1_ref = (
+        pl.read_csv("../predictions/4_fp_model_comparison_1.csv.gz")
+        .filter(pl.col("method") == "rf_mordred")
+        .rename({"fold": "cv_cycle"})
+        .with_columns(pl.lit("random").alias("split"))
     )
+    # ── CheMeleon fine-tuned baseline from notebook 2 ────────────────────────
     _chemeleon_ref = (
         pl.read_csv("../predictions/2_ml_baseline_5x5cv_random_predictions.csv.gz")
         .filter(pl.col("model") == "chemeleon")
         .rename({"model": "method", "fold": "cv_cycle"})
         .with_columns([
-            pl.lit("chemeleon_model").alias("method"),
+            pl.lit("chemeleon").alias("method"),
             pl.lit("random").alias("split"),
         ])
     )
@@ -3890,10 +3871,10 @@ def _(calc_regression_metrics, make_mcs_plot_grid, mo, pl, tabpfn_pred_df):
         .with_columns(pl.lit("random").alias("split"))
     )
 
-    _combined = pl.concat([_rf_ref, _chemeleon_ref, _tabpfn_ref], how="diagonal")
+    _combined3 = pl.concat([_a1_ref, _chemeleon_ref, _tabpfn_ref], how="diagonal")
 
     _metrics_df3 = calc_regression_metrics(
-        _combined,
+        _combined3,
         cycle_col="cv_cycle",
         val_col="y_true",
         pred_col="y_pred",
@@ -3907,32 +3888,910 @@ def _(calc_regression_metrics, make_mcs_plot_grid, mo, pl, tabpfn_pred_df):
         .sort("mae", descending=False)
     )
 
-    _ABBREV = {"xgboost": "xg", "chemeleon_model": "che_m", "chemeleon": "che",
-               "mordred": "mor", "chemprop": "cp", "no_pretrain": "bas",
-               "macau": "mc", "tabpfn": "tf"}
-    def _shorten3(name: str) -> str:
-        for long, short in _ABBREV.items():
-            name = name.replace(long, short)
-        return name
-
-    _metrics_plot3 = _metrics_df3.with_columns(
-        pl.col("method").map_elements(_shorten3, return_dtype=pl.String)
-    )
+    _PLOTS_DIR = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
 
     _fig3 = make_mcs_plot_grid(
-        _metrics_plot3,
-        stats=["mae", "rho", "r2"],
+        _metrics_df3,
+        stats=["mae"],
         group_col="method",
-        figsize=(22, 8),
-        effect_dict={"mae": 0.2, "mse": 0.2},
+        figsize=(10, 10),
+        effect_dict={"mae": 0.1},
         sort_axes=True,
+        save_path=_PLOTS_DIR / "analysis3_mcs_mae.png",
     )
 
     mo.vstack([
-        mo.md("## Analysis 3 — TabPFN vs RF and CheMeleon baselines (sorted by MAE)"),
+        mo.md("## Analysis 3 — TabPFN vs RF Mordred and CheMeleon (sorted by MAE)"),
         mo.plain_text(_summary3.to_pandas().to_string(index=False)),
-        mo.md("---"),
+        mo.md("### MCS grid — MAE"),
         mo.as_html(_fig3),
+    ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # Analysis 4 — Multitask Macau on CheMeleon fingerprint
+
+    Tests whether auxiliary assay data improves Macau's dose-response predictions
+    when using CheMeleon embeddings as row side information.
+
+    Four scenarios are compared, all using the same 5×5 CV splits (seed=42):
+
+    | Scenario | Train rows | Targets | Description |
+    |----------|-----------|---------|-------------|
+    | `base` | 4 138 | pEC50\_dr | DR compounds only — from Analysis 1 (`macau_chemeleon`) |
+    | `+sd_cols` | 4 138 | pEC50\_dr + 10 µM log₂FC | Adds single-dose signal for ~66 % of DR compounds |
+    | `+counter` | 4 138 | pEC50\_dr + pEC50\_counter | Adds counter-assay IC50 for ~64 % of DR compounds |
+    | `+sd_counter` | 4 138 | pEC50\_dr + 10 µM log₂FC + pEC50\_counter | Both auxiliary columns, DR compounds only |
+    | `+sd_rows` | 12 269 | pEC50\_dr + 10 µM log₂FC | Augments training matrix with 8 131 SD-only compounds (pEC50\_dr = missing) |
+
+    **Note on `+sd_rows`**: the SD-only compounds are added to the *training* split
+    only; they are never part of the test fold, so evaluation remains on DR
+    compounds alone and cross-fold comparisons stay fair.
+    """)
+    return
+
+
+@app.cell
+def _(
+    MacauModel,
+    Path,
+    chemeleon_embed,
+    gc,
+    generate_cv_splits_random,
+    gzip,
+    np,
+    pl,
+    tqdm,
+):
+    """
+    Multitask Macau on CheMeleon embeddings — four auxiliary-data scenarios.
+
+    Y matrix is (n_compounds × n_targets), represented as a sparse COO matrix
+    so that missing values (NaN) are simply absent and do not bias the MCMC.
+    Predictions are for pEC50_dr (column 0) only; auxiliary columns are used
+    only to regularise the latent compound factors during training.
+    """
+    import scipy.sparse as _sp
+
+    _TARGET_COL  = "pEC50_dr"
+    _SD_COL      = "10.0_log2_fc"
+    _COUNTER_COL = "pEC50_counter"
+    _PRED_PATH   = Path("../predictions/4_macau_multitask.csv.gz")
+    _CKPT_PATH   = _PRED_PATH.with_suffix(".ckpt.gz")
+    _N_OUTER = 5
+    _N_INNER = 5
+    _SEED    = 42
+    _P_VAL   = 0.1
+    _N_FOLDS = _N_OUTER * _N_INNER
+
+    _SCENARIOS = ["+sd_cols", "+counter", "+sd_counter", "+sd_rows"]
+    _EXPECTED  = set(_SCENARIOS)
+
+    # ── Load full activity table ──────────────────────────────────────────────
+    _all_data = pl.read_csv("../data/processed/all_compounds_activity_data.csv")
+    # DR training compounds (excludes test set — in_test flag is always False for DR)
+    _dr_data = _all_data.filter(pl.col(_TARGET_COL).is_not_null())
+    # Extra SD-only compounds for +sd_rows scenario
+    _sd_only  = _all_data.filter(
+        pl.col("in_single_dose") & ~pl.col("in_dose_response")
+    )
+
+    def _make_Y(df: pl.DataFrame, target_cols: list[str]):
+        """Build a sparse (n × k) target matrix, omitting NaN entries."""
+        _rows, _cols, _vals = [], [], []
+        for _j, _tc in enumerate(target_cols):
+            if _tc not in df.columns:
+                continue
+            _arr = df[_tc].to_numpy().astype(float)
+            _mask = ~np.isnan(_arr)
+            _rows.extend(np.where(_mask)[0].tolist())
+            _cols.extend([_j] * int(_mask.sum()))
+            _vals.extend(_arr[_mask].tolist())
+        return _sp.coo_matrix(
+            (np.array(_vals), (np.array(_rows), np.array(_cols))),
+            shape=(len(df), len(target_cols)),
+        )
+
+    # ── Check / resume ────────────────────────────────────────────────────────
+    _is_complete = (
+        _PRED_PATH.exists()
+        and _EXPECTED <= set(pl.read_csv(_PRED_PATH)["scenario"].unique().to_list())
+    )
+
+    if _is_complete:
+        print(f"All scenarios complete — loading {_PRED_PATH}.")
+        macau_mt_pred_df = pl.read_csv(_PRED_PATH)
+    else:
+        if _PRED_PATH.exists():
+            _all_records: list[dict] = pl.read_csv(_PRED_PATH).to_dicts()
+        elif _CKPT_PATH.exists():
+            _all_records = pl.read_csv(_CKPT_PATH).to_dicts()
+        else:
+            _all_records = []
+
+        _done_scenarios: dict[str, set[int]] = {
+            sc: {r["fold"] for r in _all_records if r["scenario"] == sc}
+            for sc in _SCENARIOS
+        }
+
+        def _ckpt(records: list[dict]) -> None:
+            if not records:
+                return
+            _CKPT_PATH.parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(_CKPT_PATH, "wb") as _f:
+                pl.DataFrame(records).write_csv(_f)
+
+        for _sc in _SCENARIOS:
+            _done_folds = _done_scenarios[_sc]
+            if len(_done_folds) >= _N_FOLDS:
+                print(f"{_sc}: already complete — skipping.")
+                continue
+            if _done_folds:
+                print(f"{_sc}: resuming from fold {len(_done_folds)}/{_N_FOLDS}")
+
+            # Which target columns does this scenario use?
+            _target_cols = {
+                "+sd_cols":    [_TARGET_COL, _SD_COL],
+                "+counter":    [_TARGET_COL, _COUNTER_COL],
+                "+sd_counter": [_TARGET_COL, _SD_COL, _COUNTER_COL],
+                "+sd_rows":    [_TARGET_COL, _SD_COL],
+            }[_sc]
+
+            _remaining = [
+                t for t in generate_cv_splits_random(
+                    _dr_data, n_outer=_N_OUTER, n_inner=_N_INNER,
+                    seed=_SEED, p_val=_P_VAL,
+                )
+                if t[0] not in _done_folds
+            ]
+
+            for _fold, _outer, _inner, _train_dr, _, _test_dr in tqdm(
+                _remaining,
+                total=_N_FOLDS - len(_done_folds),
+                desc=f"Macau multitask / {_sc}", unit="fold",
+            ):
+                # For +sd_rows: append SD-only compounds to the training split
+                if _sc == "+sd_rows":
+                    _train_rows = pl.concat([_train_dr, _sd_only], how="diagonal")
+                else:
+                    _train_rows = _train_dr
+
+                # CheMeleon embeddings (subprocess to avoid OpenMP conflict)
+                _Xtr, _Xte = chemeleon_embed(
+                    _train_rows["smiles"].to_list(),
+                    _test_dr["smiles"].to_list(),
+                    prefix=f"a4_{_sc}",
+                )
+
+                # Build sparse Y matrix for training
+                _Y_train = _make_Y(_train_rows, _target_cols)
+
+                _model = MacauModel()
+                _model.train(_Xtr, _Y_train)
+                # predict returns (n_test × k); column 0 = pEC50_dr
+                _preds_all = _model.predict(_Xte)
+                _preds = _preds_all[:, 0] if _preds_all.ndim == 2 else _preds_all
+                del _model, _Xtr, _Xte
+                gc.collect()
+
+                _y_true = _test_dr[_TARGET_COL].to_numpy()
+                for _ik, _mn, _smi, _yt, _yp in zip(
+                    _test_dr["inchikey"].to_list(),
+                    _test_dr["molecule_names"].to_list(),
+                    _test_dr["smiles"].to_list(),
+                    _y_true.tolist(),
+                    _preds.tolist(),
+                ):
+                    _all_records.append({
+                        "inchikey": _ik, "molecule_names": _mn, "smiles": _smi,
+                        "fold": _fold, "outer_fold": _outer, "inner_fold": _inner,
+                        "scenario": _sc, "method": f"macau_{_sc}",
+                        "y_true": _yt, "y_pred": _yp,
+                    })
+                _ckpt(_all_records)
+            print(f"{_sc}: done.")
+
+        _PRED_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(_PRED_PATH, "wb") as _f:
+            pl.DataFrame(_all_records).write_csv(_f)
+        _CKPT_PATH.unlink(missing_ok=True)
+        print(f"All done — {len(_all_records):,} rows → {_PRED_PATH}")
+
+        macau_mt_pred_df = pl.read_csv(_PRED_PATH)
+    return (macau_mt_pred_df,)
+
+
+@app.cell
+def _(
+    Path,
+    calc_regression_metrics,
+    macau_mt_pred_df,
+    make_mcs_plot_grid,
+    mo,
+    pl,
+):
+    """
+    Compare the multitask Macau scenarios against the single-task base
+    (macau_chemeleon from Analysis 1) and the CheMeleon fine-tuned baseline.
+    """
+    # ── base: macau chemeleon single-task from Analysis 1 ────────────────────
+    _macau_base = (
+        pl.read_csv("../predictions/4_fp_model_comparison_1.csv.gz")
+        .filter(pl.col("method") == "macau_chemeleon")
+        .rename({"fold": "cv_cycle"})
+        .with_columns([
+            pl.lit("base").alias("scenario"),
+            pl.lit("macau_base").alias("method"),
+            pl.lit("random").alias("split"),
+        ])
+    )
+    # ── CheMeleon fine-tuned baseline from notebook 2 ────────────────────────
+    _chemeleon_base = (
+        pl.read_csv("../predictions/2_ml_baseline_5x5cv_random_predictions.csv.gz")
+        .filter(pl.col("model") == "chemeleon")
+        .rename({"model": "scenario", "fold": "cv_cycle"})
+        .with_columns([
+            pl.lit("chemeleon_base").alias("scenario"),
+            pl.lit("chemeleon_base").alias("method"),
+            pl.lit("random").alias("split"),
+        ])
+    )
+    _macau_ref = (
+        macau_mt_pred_df
+        .rename({"fold": "cv_cycle"})
+        .with_columns(pl.lit("random").alias("split"))
+    )
+
+    _combined4 = pl.concat([_macau_base, _macau_ref, _chemeleon_base], how="diagonal")
+
+    _metrics4 = calc_regression_metrics(
+        _combined4,
+        cycle_col="cv_cycle",
+        val_col="y_true",
+        pred_col="y_pred",
+        thresh=4.0,
+    )
+
+    _summary4 = (
+        _metrics4
+        .group_by("method")
+        .agg(pl.col(["mae", "mse", "r2", "rho"]).mean())
+        .sort("mae")
+    )
+
+    _PLOTS_DIR = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    _SHORTEN4 = {
+        "macau_base":        "base",
+        "chemeleon_base":    "che_base",
+        "macau_+sd_cols":    "+sd",
+        "macau_+counter":    "+ctr",
+        "macau_+sd_counter": "+sd+ctr",
+        "macau_+sd_rows":    "+sd_rows",
+    }
+    _metrics4_plot = _metrics4.with_columns(
+        pl.col("method").replace(_SHORTEN4)
+    )
+
+    _fig4 = make_mcs_plot_grid(
+        _metrics4_plot,
+        stats=["mae"],
+        group_col="method",
+        figsize=(10, 10),
+        effect_dict={"mae": 0.1},
+        sort_axes=True,
+        save_path=_PLOTS_DIR / "analysis4_macau_multitask_mcs_mae.png",
+    )
+
+    mo.vstack([
+        mo.md("## Analysis 4 — Multitask Macau (CheMeleon) vs single-task baseline"),
+        mo.plain_text(_summary4.to_pandas().to_string(index=False)),
+        mo.md("### MCS grid — MAE"),
+        mo.as_html(_fig4),
+    ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # Analysis 5 — HPO for RF, XGBoost, Macau and TabPFN
+
+    Optuna TPE hyperparameter optimisation (50 trials, 1×5 CV, objective = mean MAE).
+
+    | Model | Fingerprint | Parameters tuned |
+    |-------|-------------|-----------------|
+    | RF | Mordred | n\_estimators, max\_depth, min\_samples\_leaf, max\_features |
+    | XGBoost | Mordred | n\_estimators, max\_depth, learning\_rate, subsample, colsample\_bytree, reg\_alpha |
+    | Macau | CheMeleon | num\_latent, nsamples, burnin |
+
+    Each study is persisted to SQLite (`predictions/4_hpo_*.db`) and can be resumed.
+    Best params are then evaluated with 5×5 CV and compared via MCS.
+    """)
+    return
+
+
+@app.cell
+def _(
+    BoostedTreesModel,
+    MacauModel,
+    Path,
+    RandomForestModel,
+    calc_regression_metrics,
+    chemeleon_embed,
+    extract_fp_matrix,
+    gc,
+    generate_cv_splits_random,
+    generate_fingerprint,
+    gzip,
+    make_mcs_plot_grid,
+    mo,
+    np,
+    optuna,
+    pl,
+    tqdm,
+):
+    """
+    Analysis 5: Optuna HPO (50 trials, 1×5 CV) for RF/XGB on Mordred and
+    Macau on CheMeleon, followed by 5×5 CV evaluation of best params.
+    """
+    _TARGET_COL = "pEC50_dr"
+    _SEED       = 42
+    _P_VAL      = 0.1
+    _N_TRIALS   = 50
+
+    # ── Load training data ────────────────────────────────────────────────────
+    _dr_train5 = (
+        pl.read_csv("../data/processed/all_compounds_activity_data.csv")
+        .filter(pl.col(_TARGET_COL).is_not_null())
+        .select(["smiles", "inchikey", "molecule_names", _TARGET_COL])
+    )
+
+    # ── Determine upfront whether all work is already done ───────────────────
+    _PRED5_PATH   = Path("../predictions/4_hpo_a5_best_5x5cv.csv.gz")
+    _EXPECTED5    = {"rf_mordred_hpo", "xgb_mordred_hpo", "macau_che_hpo"}
+    _DB_DIR       = Path("../predictions")
+
+    _hpo_done = all(
+        len([t for t in optuna.load_study(
+            study_name=name,
+            storage=f"sqlite:///{_DB_DIR}/{db}",
+        ).trials if t.state == optuna.trial.TrialState.COMPLETE]) >= _N_TRIALS
+        for name, db in [
+            ("rf_mordred_hpo",      "4_hpo_rf_mordred.db"),
+            ("xgb_mordred_hpo",     "4_hpo_xgb_mordred.db"),
+            ("macau_chemeleon_hpo", "4_hpo_macau_chemeleon.db"),
+        ]
+        if (_DB_DIR / db).exists()
+    ) if all((_DB_DIR / db).exists() for _, db in [
+        ("rf_mordred_hpo",      "4_hpo_rf_mordred.db"),
+        ("xgb_mordred_hpo",     "4_hpo_xgb_mordred.db"),
+        ("macau_chemeleon_hpo", "4_hpo_macau_chemeleon.db"),
+    ]) else False
+
+    _cv_done = (
+        _PRED5_PATH.exists()
+        and _EXPECTED5 <= set(pl.read_csv(_PRED5_PATH)["method"].unique().to_list())
+    )
+
+    _all_done = _hpo_done and _cv_done
+
+    # ── Pre-compute fingerprint matrices (skipped if results already exist) ───
+    if not _all_done:
+        # Mordred (for RF / XGB)
+        _mordred_fp_all = generate_fingerprint(_dr_train5, "mordred")
+        _X_mordred_all  = extract_fp_matrix(_mordred_fp_all, "mordred")
+        del _mordred_fp_all
+        if np.isnan(_X_mordred_all).any():
+            _valid_cols = ~np.isnan(_X_mordred_all).any(axis=0)
+            _X_mordred_all = _X_mordred_all[:, _valid_cols]
+
+        # CheMeleon (for Macau) — embed all compounds once via subprocess.
+        _X_che_all, _ = chemeleon_embed(
+            _dr_train5["smiles"].to_list(),
+            _dr_train5["smiles"].to_list()[:1],  # dummy single-row test; discarded
+            prefix="a5_precompute",
+        )
+
+        # Shared inchikey → row-index lookup for both matrices
+        _ik_to_idx = {ik: i for i, ik in enumerate(_dr_train5["inchikey"].to_list())}
+
+        def _idx(df) -> np.ndarray:
+            return np.array([_ik_to_idx[k] for k in df["inchikey"].to_list()])
+    else:
+        print("All HPO studies and 5×5 CV complete — skipping fingerprint computation.")
+        _X_mordred_all = _X_che_all = None
+
+        def _idx(df) -> np.ndarray:  # placeholder; never called when _all_done
+            raise RuntimeError("Fingerprints not computed.")
+
+    # ── Helper: 1×5 CV MAE for a given predict function ──────────────────────
+    def _cv1x5_mae(predict_fn) -> float:
+        maes = []
+        for _fold, _outer, _inner, _tr, _val, _te in generate_cv_splits_random(
+            _dr_train5, n_outer=1, n_inner=5, seed=_SEED, p_val=_P_VAL,
+        ):
+            maes.append(float(np.abs(predict_fn(_tr, _val, _te) - _te[_TARGET_COL].to_numpy()).mean()))
+        return float(np.mean(maes))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # HPO studies
+    # ─────────────────────────────────────────────────────────────────────────
+    _DB_DIR.mkdir(parents=True, exist_ok=True)
+
+    # ── RF on Mordred ─────────────────────────────────────────────────────────
+    def _rf_objective(trial: optuna.Trial) -> float:
+        params = dict(
+            n_estimators    = trial.suggest_int("n_estimators", 100, 800, step=100),
+            max_depth       = trial.suggest_int("max_depth", 3, 30),
+            min_samples_leaf= trial.suggest_int("min_samples_leaf", 1, 20),
+            max_features    = trial.suggest_float("max_features", 0.1, 1.0),
+        )
+        def _pred(tr, val, te):
+            m = RandomForestModel(pred_type="regression", random_state=_SEED, **params)
+            m.train(_X_mordred_all[_idx(tr)], tr[_TARGET_COL].to_numpy())
+            return m.predict(_X_mordred_all[_idx(te)])
+        return _cv1x5_mae(_pred)
+
+    _rf_study = optuna.create_study(
+        study_name="rf_mordred_hpo",
+        storage=f"sqlite:///{_DB_DIR}/4_hpo_rf_mordred.db",
+        load_if_exists=True, direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=_SEED),
+    )
+    _rf_done = len([t for t in _rf_study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    if _rf_done < _N_TRIALS:
+        _rf_study.optimize(_rf_objective, n_trials=_N_TRIALS - _rf_done, show_progress_bar=True)
+    _rf_best = {**_rf_study.best_params}
+    print(f"RF best (MAE={_rf_study.best_value:.4f}): {_rf_best}")
+
+    # ── XGBoost on Mordred ────────────────────────────────────────────────────
+    def _xgb_objective(trial: optuna.Trial) -> float:
+        params = dict(
+            n_estimators     = trial.suggest_int("n_estimators", 100, 1500, step=100),
+            max_depth        = trial.suggest_int("max_depth", 3, 10),
+            learning_rate    = trial.suggest_float("learning_rate", 0.01, 0.3, log=True),
+            subsample        = trial.suggest_float("subsample", 0.5, 1.0),
+            colsample_bytree = trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            reg_alpha        = trial.suggest_float("reg_alpha", 1e-4, 10.0, log=True),
+        )
+        def _pred(tr, val, te):
+            m = BoostedTreesModel(pred_type="regression", **params)
+            m.train(_X_mordred_all[_idx(tr)], tr[_TARGET_COL].to_numpy(),
+                    _X_mordred_all[_idx(val)], val[_TARGET_COL].to_numpy())
+            return m.predict(_X_mordred_all[_idx(te)])
+        return _cv1x5_mae(_pred)
+
+    _xgb_study = optuna.create_study(
+        study_name="xgb_mordred_hpo",
+        storage=f"sqlite:///{_DB_DIR}/4_hpo_xgb_mordred.db",
+        load_if_exists=True, direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=_SEED),
+    )
+    _xgb_done = len([t for t in _xgb_study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    if _xgb_done < _N_TRIALS:
+        _xgb_study.optimize(_xgb_objective, n_trials=_N_TRIALS - _xgb_done, show_progress_bar=True)
+    _xgb_best = {**_xgb_study.best_params}
+    print(f"XGB best (MAE={_xgb_study.best_value:.4f}): {_xgb_best}")
+
+    # ── Macau on CheMeleon ────────────────────────────────────────────────────
+    def _macau_objective(trial: optuna.Trial) -> float:
+        params = dict(
+            num_latent = trial.suggest_int("num_latent", 8, 64, step=8),
+            nsamples   = trial.suggest_int("nsamples", 100, 1000, step=100),
+            burnin     = trial.suggest_int("burnin", 50, 400, step=50),
+        )
+        def _pred(tr, val, te):
+            m = MacauModel(seed=_SEED, **params)
+            m.train(_X_che_all[_idx(tr)], tr[_TARGET_COL].to_numpy())
+            return m.predict(_X_che_all[_idx(te)])
+        return _cv1x5_mae(_pred)
+
+    _mac_study = optuna.create_study(
+        study_name="macau_chemeleon_hpo",
+        storage=f"sqlite:///{_DB_DIR}/4_hpo_macau_chemeleon.db",
+        load_if_exists=True, direction="minimize",
+        sampler=optuna.samplers.TPESampler(seed=_SEED),
+    )
+    _mac_done = len([t for t in _mac_study.trials if t.state == optuna.trial.TrialState.COMPLETE])
+    if _mac_done < _N_TRIALS:
+        _mac_study.optimize(_macau_objective, n_trials=_N_TRIALS - _mac_done, show_progress_bar=True)
+    _mac_best = {**_mac_study.best_params}
+    print(f"Macau best (MAE={_mac_study.best_value:.4f}): {_mac_best}")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # 5×5 CV evaluation with best params
+    # ─────────────────────────────────────────────────────────────────────────
+    _MODELS5 = {
+        "rf_mordred_hpo":    ("rf",    _rf_best),
+        "xgb_mordred_hpo":   ("xgb",   _xgb_best),
+        "macau_che_hpo":     ("macau", _mac_best),
+    }
+
+    _is_complete5 = _cv_done
+
+    if _is_complete5:
+        print(f"5×5 CV results found — loading.")
+        _pred5_df = pl.read_csv(_PRED5_PATH)
+    else:
+        if _PRED5_PATH.exists():
+            _all5: list[dict] = pl.read_csv(_PRED5_PATH).to_dicts()
+        else:
+            _all5 = []
+        _done5_by_method = {
+            mk: {r["fold"] for r in _all5 if r["method"] == mk}
+            for mk in _MODELS5
+        }
+
+        for _mk, (_mtype, _params) in _MODELS5.items():
+            _done_folds5 = _done5_by_method[_mk]
+            if len(_done_folds5) >= 25:
+                print(f"{_mk}: complete — skipping.")
+                continue
+            if _done_folds5:
+                print(f"{_mk}: resuming from fold {len(_done_folds5)}/25")
+
+            for _fold, _outer, _inner, _tr, _val, _te in tqdm(
+                [t for t in generate_cv_splits_random(
+                    _dr_train5, n_outer=5, n_inner=5, seed=_SEED, p_val=_P_VAL,
+                ) if t[0] not in _done_folds5],
+                total=25 - len(_done_folds5), desc=f"5×5 CV {_mk}", unit="fold",
+            ):
+                if _mtype == "rf":
+                    _m = RandomForestModel(pred_type="regression", random_state=_SEED, **_params)
+                    _m.train(_X_mordred_all[_idx(_tr)], _tr[_TARGET_COL].to_numpy())
+                    _preds5 = _m.predict(_X_mordred_all[_idx(_te)])
+                    del _m
+
+                elif _mtype == "xgb":
+                    _m = BoostedTreesModel(pred_type="regression", **_params)
+                    _m.train(_X_mordred_all[_idx(_tr)], _tr[_TARGET_COL].to_numpy(),
+                             _X_mordred_all[_idx(_val)], _val[_TARGET_COL].to_numpy())
+                    _preds5 = _m.predict(_X_mordred_all[_idx(_te)])
+                    del _m
+
+                elif _mtype == "macau":
+                    _m = MacauModel(seed=_SEED, **_params)
+                    _m.train(_X_che_all[_idx(_tr)], _tr[_TARGET_COL].to_numpy())
+                    _preds5 = _m.predict(_X_che_all[_idx(_te)])
+                    del _m
+
+                gc.collect()
+                for _ik, _mn, _smi, _yt, _yp in zip(
+                    _te["inchikey"].to_list(), _te["molecule_names"].to_list(),
+                    _te["smiles"].to_list(),
+                    _te[_TARGET_COL].to_numpy().tolist(), _preds5.tolist(),
+                ):
+                    _all5.append({
+                        "inchikey": _ik, "molecule_names": _mn, "smiles": _smi,
+                        "fold": _fold, "outer_fold": _outer, "inner_fold": _inner,
+                        "method": _mk, "y_true": _yt, "y_pred": _yp,
+                    })
+
+                # checkpoint after each fold
+                _PRED5_PATH.parent.mkdir(parents=True, exist_ok=True)
+                with gzip.open(_PRED5_PATH, "wb") as _f:
+                    pl.DataFrame(_all5).write_csv(_f)
+
+            print(f"{_mk}: done.")
+
+        _pred5_df = pl.read_csv(_PRED5_PATH)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Analysis: metrics + MCS
+    # ─────────────────────────────────────────────────────────────────────────
+    # Add Analysis 1 baselines for context: rf_mordred and macau_chemeleon
+    _a1_baseline = (
+        pl.read_csv("../predictions/4_fp_model_comparison_1.csv.gz")
+        .filter(pl.col("method").is_in(["rf_mordred", "macau_chemeleon"]))
+        .rename({"fold": "cv_cycle"})
+        .with_columns(pl.lit("random").alias("split"))
+    )
+    _pred5_combined = pl.concat([
+        _pred5_df.rename({"fold": "cv_cycle"}).with_columns(pl.lit("random").alias("split")),
+        _a1_baseline,
+    ], how="diagonal")
+
+    _metrics5 = calc_regression_metrics(
+        _pred5_combined, cycle_col="cv_cycle",
+        val_col="y_true", pred_col="y_pred", thresh=4.0,
+    )
+    _summary5 = (
+        _metrics5
+        .group_by("method")
+        .agg(pl.col(["mae", "mse", "r2", "rho"]).mean())
+        .sort("mae")
+    )
+
+    _PLOTS_DIR5 = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR5.mkdir(parents=True, exist_ok=True)
+
+    _fig5 = make_mcs_plot_grid(
+        _metrics5,
+        stats=["mae"],
+        group_col="method",
+        figsize=(12, 12),
+        effect_dict={"mae": 0.1},
+        sort_axes=True,
+        save_path=_PLOTS_DIR5 / "analysis5_hpo_mcs_mae.png",
+    )
+
+    _best_table = pl.DataFrame([
+        {"model": "RF (Mordred)",       **{k: str(v) for k, v in _rf_best.items()},  "cv_mae": round(_rf_study.best_value,  4)},
+        {"model": "XGBoost (Mordred)",  **{k: str(v) for k, v in _xgb_best.items()}, "cv_mae": round(_xgb_study.best_value, 4)},
+        {"model": "Macau (CheMeleon)",  **{k: str(v) for k, v in _mac_best.items()}, "cv_mae": round(_mac_study.best_value, 4)},
+    ])
+
+    mo.vstack([
+        mo.md("## Analysis 5 — HPO best params (1×5 CV)"),
+        mo.plain_text(_best_table.to_pandas().to_string(index=False)),
+        mo.md("## 5×5 CV evaluation vs untuned baselines (sorted by MAE)"),
+        mo.plain_text(_summary5.to_pandas().to_string(index=False)),
+        mo.md("### MCS grid — MAE"),
+        mo.as_html(_fig5),
+    ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # Analysis 6 — Ensemble sweep over HPO model predictions
+
+    Exhaustive weighted-average ensemble over six HPO-tuned models:
+
+    | Short | Model | FP |
+    |-------|-------|----|
+    | `cp` | Chemprop HPO | graph |
+    | `ch` | CheMeleon HPO | graph |
+    | `rf` | RF HPO | Mordred |
+    | `xg` | XGBoost HPO | Mordred |
+    | `mc` | Macau HPO | CheMeleon |
+    | `tf` | TabPFN | CheMeleon |
+
+    Each weight ∈ {0, ⅕, ¼, ⅓, ½, 1, 2, 3, 4, 5}. Ratio-duplicate combinations are pruned
+    (e.g. all-2 = all-1), and at least 2 models must be active (weight > 0).
+    Combinations are evaluated one at a time to avoid memory pressure — only
+    per-fold MAE and Spearman ρ are kept per combo, not the full prediction matrix.
+    """)
+    return
+
+
+@app.cell
+def _(Path, calc_regression_metrics, gzip, mcs_plot, mo, np, pl, plt, tqdm):
+    """
+    Sweep all ratio-distinct weight combinations for 6 HPO models.
+
+    Processes one combination at a time: computes weighted-average predictions
+    across all 25 folds, calculates MAE and Spearman ρ, appends a single-row
+    summary to the output CSV, then moves to the next combination.  Memory use
+    is constant regardless of search space size.  Resumes automatically if the
+    output file already exists.
+    """
+    import itertools
+    from fractions import Fraction
+
+    _OUT_PATH = Path("../predictions/4_ensemble_sweep_metrics.csv.gz")
+
+    # ── Model definitions ─────────────────────────────────────────────────────
+    _MODELS = [
+        ("cp",  Path("../predictions/4_hpo_best_5x5cv.csv.gz"),        "method", "chemprop_hpo"),
+        ("ch",  Path("../predictions/4_hpo_best_5x5cv.csv.gz"),        "method", "chemeleon_hpo"),
+        ("rf",  Path("../predictions/4_hpo_a5_best_5x5cv.csv.gz"),     "method", "rf_mordred_hpo"),
+        ("xg",  Path("../predictions/4_hpo_a5_best_5x5cv.csv.gz"),     "method", "xgb_mordred_hpo"),
+        ("mc",  Path("../predictions/4_hpo_a5_best_5x5cv.csv.gz"),     "method", "macau_che_hpo"),
+        ("tf",  Path("../predictions/4_fp_model_comparison_2.csv.gz"), "method", "tabpfn_chemeleon"),
+    ]
+    _TAGS = [m[0] for m in _MODELS]
+
+    # ── Build ratio-distinct weight matrix ────────────────────────────────────
+    _W_frac = [Fraction(0), Fraction(1, 5), Fraction(1, 4), Fraction(1, 3),
+               Fraction(1, 2), Fraction(1), Fraction(2), Fraction(3),
+               Fraction(4), Fraction(5)]
+    _W_vals = np.array([0.0, 1/5, 1/4, 1/3, 1/2, 1.0, 2.0, 3.0, 4.0, 5.0],
+                       dtype=np.float64)
+
+    _seen: set = set()
+    _combos_idx: list[tuple[int, ...]] = []
+    for _idx_tuple in itertools.product(range(10), repeat=6):
+        _w_frac = tuple(_W_frac[i] for i in _idx_tuple)
+        if sum(x > 0 for x in _w_frac) < 2:
+            continue
+        _min_nz = min(x for x in _w_frac if x > 0)
+        _norm = tuple(x / _min_nz for x in _w_frac)
+        if _norm not in _seen:
+            _seen.add(_norm)
+            _combos_idx.append(_idx_tuple)
+
+    _W_mat = _W_vals[np.array(_combos_idx)]                    # (n_combos, 6)
+    _W_norm = (_W_mat / _W_mat.sum(axis=1, keepdims=True))     # normalised rows
+    _n_combos = len(_combos_idx)
+    _combo_to_row = {t: i for i, t in enumerate(_combos_idx)}  # O(1) lookup
+
+    def _combo_label(idx_tuple: tuple[int, ...]) -> str:
+        """Compact label e.g. 'cp1_ch2_rf0_xg1_mc0_tf3'."""
+        _label_map = {0: "0", 1: "15", 2: "14", 3: "13", 4: "12",
+                      5: "1", 6: "2", 7: "3", 8: "4", 9: "5"}
+        return "_".join(f"{tag}{_label_map[i]}" for tag, i in zip(_TAGS, idx_tuple))
+
+    # ── Load and pivot predictions (done once regardless of cache state) ───────
+    _parts = []
+    for _tag, _path, _col, _val in _MODELS:
+        _parts.append(
+            pl.read_csv(_path)
+            .filter(pl.col(_col) == _val)
+            .select(["inchikey", "fold", "y_true", pl.col("y_pred").alias(_tag)])
+        )
+    _wide = _parts[0]
+    for _p in _parts[1:]:
+        _wide = _wide.join(_p.drop("y_true"), on=["inchikey", "fold"])
+
+    # Pre-extract per-fold numpy arrays — avoids repeated Polars filtering
+    _folds = sorted(_wide["fold"].unique().to_list())
+    _fold_arrays: list[tuple[np.ndarray, np.ndarray]] = []
+    for _f in _folds:
+        _fd = _wide.filter(pl.col("fold") == _f)
+        _fold_arrays.append((
+            _fd.select(_TAGS).to_numpy().astype(np.float64),  # (n_cmp, 6)
+            _fd["y_true"].to_numpy().astype(np.float64),       # (n_cmp,)
+        ))
+
+    def _spearman(a: np.ndarray, b: np.ndarray) -> float:
+        """Spearman ρ between 1-D arrays a and b."""
+        _ra = np.argsort(np.argsort(a)).astype(np.float64)
+        _rb = np.argsort(np.argsort(b)).astype(np.float64)
+        _da, _db = _ra - _ra.mean(), _rb - _rb.mean()
+        _denom = _da.std() * _db.std()
+        return float(_da @ _db / (len(_ra) * _denom)) if _denom > 0 else 0.0
+
+    if _OUT_PATH.exists():
+        _done_labels = set(pl.read_csv(_OUT_PATH)["ensemble"].to_list())
+        print(f"Resuming — {len(_done_labels):,} of {_n_combos:,} combos already done.")
+    else:
+        _done_labels = set()
+        _OUT_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    # ── One combination at a time, appending metrics to file ──────────────────
+    _header_written = _OUT_PATH.exists()
+    _remaining = [t for t in _combos_idx
+                  if _combo_label(t) not in _done_labels]
+
+    with gzip.open(_OUT_PATH, "ab" if _header_written else "wb") as _fh:
+        for _idx_t in tqdm(_remaining, total=len(_remaining),
+                           desc="Ensemble sweep", unit="combo"):
+            _w = _W_norm[_combo_to_row[_idx_t]]       # normalised weight vector (6,)
+            _fold_maes, _fold_rhos = [], []
+            for _P, _y in _fold_arrays:
+                _ens = _P @ _w                        # (n_cmp,) — single combo
+                _fold_maes.append(float(np.abs(_ens - _y).mean()))
+                _fold_rhos.append(_spearman(_ens, _y))
+            _row = pl.DataFrame([{
+                "ensemble": _combo_label(_idx_t),
+                **{f"w_{tag}": _W_vals[_idx_t[i]] for i, tag in enumerate(_TAGS)},
+                "mae": float(np.mean(_fold_maes)),
+                "rho": float(np.mean(_fold_rhos)),
+            }])
+            _row.write_csv(_fh, include_header=not _header_written)
+            _header_written = True
+
+    _sweep_df = pl.read_csv(_OUT_PATH)
+    print(f"Done — {len(_sweep_df):,} combos in {_OUT_PATH}")
+
+    from statsmodels.stats.multicomp import pairwise_tukeyhsd
+    import pandas as _pd
+
+    _top20 = _sweep_df.sort("mae").head(20)
+
+    # ── Individual model summary ───────────────────────────────────────────────
+    _indiv_records = []
+    for _tag, _path, _col, _val in _MODELS:
+        _df = pl.read_csv(_path).filter(pl.col(_col) == _val)
+        _metrics = calc_regression_metrics(
+            _df.rename({"fold": "cv_cycle"}).with_columns(pl.lit("random").alias("split")),
+            cycle_col="cv_cycle", val_col="y_true", pred_col="y_pred", thresh=4.0,
+        )
+        _indiv_records.append(
+            _metrics.group_by("method")
+            .agg(pl.col(["mae", "rho"]).mean())
+            .with_columns(pl.lit(_tag).alias("model"))
+            .select(["model", "mae", "rho"])
+        )
+    _indiv_summary = pl.concat(_indiv_records).sort("mae")
+
+    # ── Per-model weight MCS heatmaps ─────────────────────────────────────────
+    # For each model (cp, ch, rf, xg, mc, tf) group all ensemble combos by the
+    # weight assigned to that model and run Tukey HSD on MAE across weight groups.
+    # Each weight level becomes a "method" in the heatmap.
+
+    _W_LABEL = {0.0: "0", 1/5: "1/5", 1/4: "1/4", 1/3: "1/3",
+                1/2: "1/2", 1.0: "1", 2.0: "2", 3.0: "3", 4.0: "4", 5.0: "5"}
+
+    def _w_label(v: float) -> str:
+        # round to avoid float comparison issues
+        return _W_LABEL.get(round(v, 6), str(round(v, 4)))
+
+    _TAG_FULLNAME = {
+        "cp": "Chemprop HPO",
+        "ch": "CheMeleon HPO",
+        "rf": "RF HPO (Mordred)",
+        "xg": "XGBoost HPO (Mordred)",
+        "mc": "Macau HPO (CheMeleon)",
+        "tf": "TabPFN (CheMeleon)",
+    }
+
+    def _weight_mcs_ax(ax, tag: str) -> None:
+        """Draw a Tukey HSD MCS heatmap for one model's weight levels."""
+        _wcol = f"w_{tag}"
+        _sweep_pd = _sweep_df.select([_wcol, "mae"]).to_pandas()
+        _sweep_pd["w_label"] = _sweep_pd[_wcol].map(_w_label)
+
+        # Sort groups by mean MAE ascending
+        _order = (
+            _sweep_pd.groupby("w_label")["mae"].mean()
+            .sort_values().index.tolist()
+        )
+        _groups = _sweep_pd["w_label"].values
+        _vals   = _sweep_pd["mae"].values
+
+        _tukey = pairwise_tukeyhsd(_vals, _groups, alpha=0.05)
+        _res = _pd.DataFrame(
+            data    = _tukey._results_table.data[1:],
+            columns = _tukey._results_table.data[0],
+        )
+
+        # Build symmetric mean-difference and p-value matrices
+        _means = _sweep_pd.groupby("w_label")["mae"].mean().reindex(_order)
+        _n     = len(_order)
+        _diff  = _pd.DataFrame(0.0, index=_order, columns=_order)
+        _pval  = _pd.DataFrame(1.0, index=_order, columns=_order)
+
+        for _, row in _res.iterrows():
+            g1, g2 = str(row["group1"]), str(row["group2"])
+            if g1 in _order and g2 in _order:
+                d = float(row["meandiff"])
+                p = float(row["p-adj"])
+                _diff.loc[g1, g2] = d
+                _diff.loc[g2, g1] = -d
+                _pval.loc[g1, g2] = p
+                _pval.loc[g2, g1] = p
+
+        mcs_plot(
+            pc=_pval, effect_size=_diff, means=_means,
+            ax=ax, show_diff=True,
+            cell_text_size=8, axis_text_size=9,
+            reverse_cmap=True,  # lower MAE = better = blue
+            vlim=0.05,
+        )
+        ax.set_title(f"{_TAG_FULLNAME[tag]}  (weight effect on MAE)", fontsize=11)
+
+    _PLOTS_DIR6 = Path("../plots/4_ml_optimization_2")
+    _PLOTS_DIR6.mkdir(parents=True, exist_ok=True)
+
+    _fig_w, _axes_w = plt.subplots(3, 2, figsize=(14, 22))
+    for _ax, _tag in zip(_axes_w.flatten(), _TAGS):
+        _weight_mcs_ax(_ax, _tag)
+    _fig_w.suptitle("Weight sensitivity MCS heatmaps — MAE (lower = better, blue)",
+                     fontsize=14)
+    _fig_w.tight_layout()
+    _fig_w.savefig(_PLOTS_DIR6 / "analysis6_ensemble_mcs_mae.png",
+                   dpi=120, bbox_inches="tight")
+
+    mo.vstack([
+        mo.md("## Analysis 6 — Ensemble sweep results"),
+        mo.md(f"**{_n_combos:,} ratio-distinct weight combinations evaluated**"),
+        mo.md("### Individual model summary (sorted by MAE)"),
+        mo.plain_text(_indiv_summary.to_pandas().to_string(index=False)),
+        mo.md("### Top-20 ensembles by MAE"),
+        mo.plain_text(_top20.to_pandas().to_string(index=False)),
+        mo.md("### Weight sensitivity — MCS heatmaps per model (MAE)"),
+        mo.md("Each heatmap shows whether changing the weight assigned to one model "
+              "significantly changes ensemble MAE (averaged over all other weight combinations)."),
+        mo.as_html(_fig_w),
     ])
     return
 
@@ -3955,122 +4814,205 @@ def _(mo):
 
 
 @app.cell
-def _(Path, pl, tempfile):
-    """Parse the chemprop CLI log into a DataFrame of inter-fold gaps."""
+def _(Path, pl):
+    """
+    Parse the chemprop CLI log into a DataFrame of inter-fold gaps.
+
+    Each training block starts with 'Running in mode train' and ends at the
+    'predict - test size' line within that block.  Training time is measured
+    as train-start → predict-end, which is immune to inter-run idle gaps that
+    would otherwise inflate the apparent time of the first fold after a break.
+    A block belongs to CheMeleon if it contains 'Loading cached CheMeleon'.
+    """
     from datetime import datetime
 
-    _CLI_LOG = Path(tempfile.gettempdir()) / "chemprop_cli.log"
+    _CLI_LOG  = Path("../logs/chemprop_cli.log")
     _STALL_THR = 150
 
-    _cli_times = []
+    # ── split log into per-fold blocks ────────────────────────────────────────
+    # Each record: (train_start, predict_end, model).
+    # Using train_start → predict_end avoids contamination from inter-run idle
+    # gaps that would inflate the apparent training time of the next fold.
+    _folds: list[tuple[datetime, datetime, str]] = []
     if _CLI_LOG.exists():
-        for _line in _CLI_LOG.read_text().splitlines():
-            if "INFO:chemprop.cli.predict - test size" in _line:
+        _lines = _CLI_LOG.read_text().splitlines()
+        _block_lines: list[str] = []
+        _block_start: datetime | None = None
+        for _line in _lines:
+            if "Running in mode 'train'" in _line:
+                # flush previous block
+                if _block_lines and _block_start:
+                    _is_che = any("Loading cached CheMeleon" in bl for bl in _block_lines)
+                    _model  = "chemeleon" if _is_che else "chemprop"
+                    for _bl in _block_lines:
+                        if "chemprop.cli.predict - test size" in _bl:
+                            try:
+                                _ts_end = datetime.fromisoformat(
+                                    _bl.split(" - ")[0].strip().replace("T", " ")
+                                )
+                                _folds.append((_block_start, _ts_end, _model))
+                            except Exception:
+                                pass
+                            break
                 try:
-                    _cli_times.append(
-                        datetime.fromisoformat(_line.split(" - ")[0].strip().replace("T", " "))
+                    _block_start = datetime.fromisoformat(
+                        _line.split(" - ")[0].strip().replace("T", " ")
                     )
                 except Exception:
-                    pass
+                    _block_start = None
+                _block_lines = [_line]
+            else:
+                _block_lines.append(_line)
+        # flush last block
+        if _block_lines and _block_start:
+            _is_che = any("Loading cached CheMeleon" in bl for bl in _block_lines)
+            _model  = "chemeleon" if _is_che else "chemprop"
+            for _bl in _block_lines:
+                if "chemprop.cli.predict - test size" in _bl:
+                    try:
+                        _ts_end = datetime.fromisoformat(
+                            _bl.split(" - ")[0].strip().replace("T", " ")
+                        )
+                        _folds.append((_block_start, _ts_end, _model))
+                    except Exception:
+                        pass
+                    break
 
+    _t0 = _folds[0][0] if _folds else None
     _rows = []
-    for _i in range(1, len(_cli_times)):
-        _gap = (_cli_times[_i] - _cli_times[_i - 1]).total_seconds()
+    for _i, (_t_start, _t_end, _model) in enumerate(_folds):
+        _train_s = (_t_end - _t_start).total_seconds()
         _rows.append({
             "fold_idx":  _i,
-            "t_start":   _cli_times[_i - 1],
-            "gap_s":     _gap,
-            "hour":      _cli_times[_i - 1].hour,
-            "date":      _cli_times[_i - 1].date().isoformat(),
-            "is_stall":  _gap > _STALL_THR,
-            "elapsed_h": (_cli_times[_i - 1] - _cli_times[0]).total_seconds() / 3600,
+            "model":     _model,
+            "t_start":   _t_start,
+            "gap_s":     _train_s,
+            "hour":      _t_start.hour,
+            "date":      _t_start.date().isoformat(),
+            "is_stall":  _train_s > _STALL_THR,
+            "elapsed_h": (_t_start - _t0).total_seconds() / 3600,
         })
 
     timing_df = pl.DataFrame(_rows)
-    print(f"CLI folds parsed: {len(_cli_times)}  |  Gaps: {len(timing_df)}  |  "
-          f"Stalls: {timing_df['is_stall'].sum()} "
-          f"({100 * timing_df['is_stall'].mean():.0f}%)")
+    _by_model = (
+        timing_df.group_by("model")
+        .agg([
+            pl.len().alias("n_gaps"),
+            pl.col("is_stall").sum().alias("n_stalls"),
+            (pl.col("is_stall").mean() * 100).round(1).alias("stall_pct"),
+        ])
+        .sort("model")
+    )
+    print(timing_df.group_by("model").len())
+    print(_by_model)
     return (timing_df,)
 
 
 @app.cell
 def _(Path, mo, np, pl, plt, sns, timing_df):
     """
-    Three individual plots saved to plots/:
+    Three plots split by model (chemprop vs chemeleon), saved to plots/:
       1. Stall rate by hour of day
       2. Rolling stall rate over elapsed run time
       3. Gap duration distribution
     """
-    _STALL_THR  = 150
-    _PLOTS_DIR  = Path("../plots") / "4_ml_optimization_2"
+    _STALL_THR = 150
+    _PLOTS_DIR = Path("../plots") / "4_ml_optimization_2"
     _PLOTS_DIR.mkdir(parents=True, exist_ok=True)
-    _COLOR      = "tab:blue"
+
+    _MODELS   = ["chemprop", "chemeleon"]
+    _COLORS   = {"chemprop": "tab:blue", "chemeleon": "tab:orange"}
+    _LABELS   = {"chemprop": "Chemprop (scratch)", "chemeleon": "CheMeleon"}
 
     sns.set_style("whitegrid")
     sns.set_context("notebook", font_scale=1.2)
 
-    # ── data prep ─────────────────────────────────────────────────────────────
-    _hourly = (
-        timing_df
-        .group_by("hour")
-        .agg([
-            pl.len().alias("n"),
-            (pl.col("is_stall").mean() * 100).alias("stall_pct"),
-            pl.col("gap_s").mean().alias("avg_gap_s"),
-        ])
-        .sort("hour")
-        .to_pandas()
-    )
+    # ── per-model data prep ───────────────────────────────────────────────────
+    def _hourly_df(df: pl.DataFrame) -> "pd.DataFrame":
+        return (
+            df.group_by("hour")
+            .agg((pl.col("is_stall").mean() * 100).alias("stall_pct"))
+            .sort("hour")
+            .to_pandas()
+        )
 
-    _eh   = timing_df["elapsed_h"].to_numpy()
-    _st   = timing_df["is_stall"].to_numpy().astype(float)
-    _win  = 2.0
-    _roll = []
-    for _i, _e in enumerate(_eh):
-        _m = (_eh >= _e - _win) & (_eh <= _e)
-        if _m.sum() >= 3:
-            _roll.append({"elapsed_h": _e, "roll_pct": float(_st[_m].mean() * 100)})
-    _roll_pd = pl.DataFrame(_roll).sort("elapsed_h").to_pandas()
+    def _rolling(df: pl.DataFrame, win: float = 2.0) -> "pd.DataFrame":
+        _eh = df["elapsed_h"].to_numpy()
+        _st = df["is_stall"].to_numpy().astype(float)
+        _rows = []
+        for _i, _e in enumerate(_eh):
+            _m = (_eh >= _e - win) & (_eh <= _e)
+            if _m.sum() >= 3:
+                _rows.append({"elapsed_h": _e, "roll_pct": float(_st[_m].mean() * 100)})
+        return pl.DataFrame(_rows).sort("elapsed_h").to_pandas() if _rows else None
 
-    _gaps = timing_df["gap_s"].to_numpy()
+    _subsets = {m: timing_df.filter(pl.col("model") == m) for m in _MODELS}
 
-    # ── plot 1: stall rate by hour ────────────────────────────────────────────
+    # ── plot 1: stall rate by hour (chemprop only) ───────────────────────────
     _fig1, _ax1 = plt.subplots(figsize=(10, 5))
-    _ax1.plot(_hourly["hour"], _hourly["stall_pct"], marker="o", color=_COLOR)
-    _ax1.fill_between(_hourly["hour"], _hourly["stall_pct"], alpha=0.2, color=_COLOR)
+    _h = _hourly_df(_subsets["chemprop"])
+    _ax1.plot(_h["hour"], _h["stall_pct"], marker="o", color=_COLORS["chemprop"])
+    _ax1.fill_between(_h["hour"], _h["stall_pct"], alpha=0.2, color=_COLORS["chemprop"])
     _ax1.axhspan(0, 30, alpha=0.07, color="green")
-    _ax1.set_xlabel("Hour of day")
-    _ax1.set_ylabel("Stall rate (%)")
-    _ax1.set_title("Chemprop CLI — stall rate by hour of day")
-    _ax1.set_xticks(range(0, 24, 2))
-    _ax1.set_ylim(0, 105)
     _ax1.text(0.5, 25, "target zone (≤30%)", color="green", alpha=0.7,
               transform=_ax1.get_yaxis_transform(), fontsize=9)
+    _ax1.set_xlabel("Hour of day")
+    _ax1.set_ylabel("Stall rate (%)")
+    _ax1.set_title("Chemprop (scratch) — stall rate by hour of day")
+    _ax1.set_xticks(range(0, 24, 2))
+    _ax1.set_ylim(0, 105)
     _fig1.tight_layout()
     _fig1.savefig(_PLOTS_DIR / "mps_stall_by_hour.png", dpi=150, bbox_inches="tight")
     plt.close(_fig1)
 
-    # ── plot 2: rolling stall rate over elapsed run time ─────────────────────
+    # ── plot 2: rolling stall rate over elapsed run time (chemprop only) ─────
     _fig2, _ax2 = plt.subplots(figsize=(10, 5))
-    _ax2.plot(_roll_pd["elapsed_h"], _roll_pd["roll_pct"], color=_COLOR, alpha=0.85)
+    _r = _rolling(_subsets["chemprop"])
+    if _r is not None:
+        _ax2.plot(_r["elapsed_h"], _r["roll_pct"], color=_COLORS["chemprop"], alpha=0.85)
     _ax2.axhline(50, color="red", linestyle="--", alpha=0.5, label="50% threshold")
     _ax2.set_xlabel("Elapsed run time (hours)")
     _ax2.set_ylabel("Rolling stall rate % (2 h window)")
-    _ax2.set_title("Chemprop CLI — performance degradation over run time")
+    _ax2.set_title("Chemprop (scratch) — performance degradation over run time")
     _ax2.set_ylim(0, 105)
     _ax2.legend()
     _fig2.tight_layout()
     _fig2.savefig(_PLOTS_DIR / "mps_stall_over_time.png", dpi=150, bbox_inches="tight")
     plt.close(_fig2)
 
+    # ── plot 2b: individual fold times over elapsed run time ─────────────────
+    _fig2b, _ax2b = plt.subplots(figsize=(12, 5))
+    _df_cp = _subsets["chemprop"].to_pandas()
+    _ax2b.scatter(
+        _df_cp["elapsed_h"], _df_cp["gap_s"] / 60,
+        color=_COLORS["chemprop"], alpha=0.5, s=18,
+    )
+    _ax2b.axhline(_STALL_THR / 60, color="red",    linestyle="--", alpha=0.6, label=f"stall threshold ({_STALL_THR} s)")
+    _ax2b.axhline(15,              color="gray",   linestyle=":",  alpha=0.6, label="15 min")
+    _ax2b.axhline(30,              color="olive",  linestyle=":",  alpha=0.6, label="30 min")
+    _ax2b.axhline(60,              color="purple", linestyle=":",  alpha=0.6, label="1 h")
+    _ax2b.set_yscale("log")
+    _ax2b.set_xlabel("Elapsed run time (hours)")
+    _ax2b.set_ylabel("Fold wall-clock time (min, log scale)")
+    _ax2b.set_title("Chemprop (scratch) — individual fold times over elapsed run time")
+    _ax2b.legend(loc="upper left", fontsize=9)
+    _fig2b.tight_layout()
+    _fig2b.savefig(_PLOTS_DIR / "mps_fold_times_scatter.png", dpi=150, bbox_inches="tight")
+    plt.close(_fig2b)
+
     # ── plot 3: gap distribution (log-log) ────────────────────────────────────
+    _all_gaps = timing_df["gap_s"].to_numpy()
+    _bins = np.logspace(np.log10(_all_gaps.min() + 1), np.log10(_all_gaps.max()), 50)
     _fig3, _ax3 = plt.subplots(figsize=(10, 5))
-    _ax3.hist(_gaps, bins=np.logspace(np.log10(_gaps.min() + 1),
-                                       np.log10(_gaps.max()), 60),
-              color=_COLOR, alpha=0.75, log=True)
+    for _m in _MODELS:
+        _gaps_m = _subsets[_m]["gap_s"].to_numpy()
+        _ax3.hist(_gaps_m, bins=_bins, color=_COLORS[_m], alpha=0.6,
+                  label=_LABELS[_m], log=True)
     _ax3.set_xscale("log")
-    _ax3.axvline(_STALL_THR, color="red", linestyle="--", alpha=0.7,
-                 label=f"stall threshold ({_STALL_THR} s)")
+    _ax3.axvline(_STALL_THR, color="red",    linestyle="--", alpha=0.7, label=f"stall threshold ({_STALL_THR} s)")
+    _ax3.axvline(1_800,      color="olive",  linestyle=":",  alpha=0.7, label="30 min")
+    _ax3.axvline(3_600,      color="purple", linestyle=":",  alpha=0.7, label="1 h")
+    _ax3.axvline(10_800,     color="brown",  linestyle=":",  alpha=0.7, label="3 h")
     _ax3.set_xlabel("Inter-fold gap (s, log scale)")
     _ax3.set_ylabel("Count (log scale)")
     _ax3.set_title("Chemprop CLI — distribution of inter-fold gaps")
@@ -4079,18 +5021,22 @@ def _(Path, mo, np, pl, plt, sns, timing_df):
     _fig3.savefig(_PLOTS_DIR / "mps_gap_distribution.png", dpi=150, bbox_inches="tight")
     plt.close(_fig3)
 
-    # ── summary table ─────────────────────────────────────────────────────────
-    _normal = timing_df.filter(~pl.col("is_stall"))["gap_s"]
-    _stalls = timing_df.filter(pl.col("is_stall"))["gap_s"]
-    _summary = pl.DataFrame([{
-        "n_folds":      len(timing_df) + 1,
-        "n_gaps":       len(timing_df),
-        "n_stalls":     int(timing_df["is_stall"].sum()),
-        "stall_pct":    round(100 * timing_df["is_stall"].mean(), 1),
-        "normal_avg_s": round(float(_normal.mean()), 0) if len(_normal) else None,
-        "stall_avg_s":  round(float(_stalls.mean()), 0) if len(_stalls) else None,
-        "stall_max_s":  round(float(_stalls.max()), 0)  if len(_stalls) else None,
-    }])
+    # ── summary table per model ───────────────────────────────────────────────
+    _summary_rows = []
+    for _m in _MODELS:
+        _df_m   = _subsets[_m]
+        _normal = _df_m.filter(~pl.col("is_stall"))["gap_s"]
+        _stalls = _df_m.filter(pl.col("is_stall"))["gap_s"]
+        _summary_rows.append({
+            "model":        _m,
+            "n_folds":      len(_df_m) + 1,
+            "n_stalls":     int(_df_m["is_stall"].sum()),
+            "stall_pct":    round(100 * float(_df_m["is_stall"].mean()), 1),
+            "normal_avg_s": round(float(_normal.mean()), 0) if len(_normal) else None,
+            "stall_avg_s":  round(float(_stalls.mean()), 0) if len(_stalls) else None,
+            "stall_max_s":  round(float(_stalls.max()),  0) if len(_stalls) else None,
+        })
+    _summary = pl.DataFrame(_summary_rows)
 
     mo.vstack([
         mo.md("## CLI MPS stall summary"),
@@ -4099,9 +5045,383 @@ def _(Path, mo, np, pl, plt, sns, timing_df):
         mo.image(str(_PLOTS_DIR / "mps_stall_by_hour.png")),
         mo.md("### Performance degradation over run time"),
         mo.image(str(_PLOTS_DIR / "mps_stall_over_time.png")),
+        mo.md("### Individual fold times over elapsed run time"),
+        mo.image(str(_PLOTS_DIR / "mps_fold_times_scatter.png")),
         mo.md("### Inter-fold gap distribution"),
         mo.image(str(_PLOTS_DIR / "mps_gap_distribution.png")),
     ])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    # Submissions
+
+    Train each model on the full dose-response training set and predict the
+    513 held-out test compounds.
+
+    **Individual submissions**
+
+    | File | Model |
+    |------|-------|
+    | `4_tabpfn_chemeleon_submission.csv` | TabPFN on CheMeleon FP (default params) |
+    | `4_chemeleon_hpo_submission.csv` | CheMeleon HPO best params |
+    | `4_macau_che_hpo_submission.csv` | Macau HPO best params (CheMeleon FP) |
+
+    **Ensemble submissions** (weighted average of cp / ch / xg / mc / tf test predictions)
+
+    | File | Weights (cp · ch · rf · xg · mc · tf) |
+    |------|---------------------------------------|
+    | `4_ens_cp4_ch5_rf0_xg1_mc0_tf5_submission.csv` | 4 · 5 · 0 · 1 · 0 · 5 |
+    | `4_ens_cp4_ch5_rf0_xg1_mc1_tf5_submission.csv` | 4 · 5 · 0 · 1 · 1 · 5 |
+    | `4_ens_cp5_ch5_rf0_xg13_mc1_tf5_submission.csv` | 5 · 5 · 0 · ⅓ · 1 · 5 |
+    """)
+    return
+
+
+@app.cell
+def _(
+    BoostedTreesModel,
+    ChempropChemeleonModel,
+    ChempropModel,
+    MacauModel,
+    Path,
+    best_params,
+    chemeleon_embed,
+    extract_fp_matrix,
+    generate_fingerprint,
+    mo,
+    np,
+    pl,
+    subprocess,
+    sys,
+    tempfile,
+):
+    """
+    Train all models on the full training set and generate test-set predictions.
+    Each model is skipped if its output file already exists.
+    """
+    _TARGET_COL = "pEC50_dr"
+    _SEED       = 42
+    _SUB_DIR    = Path("../submissions")
+    _SUB_DIR.mkdir(parents=True, exist_ok=True)
+    _tmp        = Path(tempfile.gettempdir())
+    _TABPFN_SCRIPT = _tmp / "sub_tabpfn.py"
+
+    # ── Load datasets ─────────────────────────────────────────────────────────
+    _train_full = (
+        pl.read_csv("../data/processed/all_compounds_activity_data.csv")
+        .filter(pl.col(_TARGET_COL).is_not_null())
+        .select(["smiles", "inchikey", "molecule_names", _TARGET_COL])
+    )
+    _test_df = pl.read_csv("../data/raw/20260409/dose_response_test.csv")
+    _test_smiles = _test_df["SMILES"].to_list()
+    _test_names  = _test_df["Molecule Name"].to_list()
+
+    # 10 % val split for models that need early stopping
+    _rng      = np.random.default_rng(_SEED)
+    _n        = len(_train_full)
+    _val_idx  = _rng.choice(_n, size=int(_n * 0.1), replace=False)
+    _tr_idx   = np.setdiff1d(np.arange(_n), _val_idx)
+    _train_sub = _train_full[_tr_idx.tolist()]
+    _val_sub   = _train_full[_val_idx.tolist()]
+
+    def _save_submission(path: Path, preds: np.ndarray) -> None:
+        pl.DataFrame({
+            "SMILES":        _test_smiles,
+            "Molecule Name": _test_names,
+            "pEC50":         preds.tolist(),
+        }).write_csv(path)
+        print(f"Saved {len(preds)} predictions → {path.name}")
+
+    # ── 1. TabPFN on CheMeleon FP ─────────────────────────────────────────────
+    _tfn_path = _SUB_DIR / "4_tabpfn_chemeleon_submission.csv"
+    if _tfn_path.exists():
+        print(f"tabpfn_chemeleon: already exists — skipping.")
+    else:
+        _TABPFN_SCRIPT.write_text("\n".join([
+            "import os, sys, numpy as np",
+            "os.environ['KMP_DUPLICATE_LIB_OK'] = 'TRUE'",
+            "from dotenv import load_dotenv; from pathlib import Path",
+            "load_dotenv(Path('.env'))",
+            "import torch",
+            "torch.set_num_threads(max(1, (os.cpu_count() or 1) - 1))",
+            "from tabpfn import TabPFNRegressor",
+            "X_train = np.load(sys.argv[1])",
+            "y_train = np.load(sys.argv[2])",
+            "X_test  = np.load(sys.argv[3])",
+            "out     = sys.argv[4]",
+            "model = TabPFNRegressor(n_estimators=8, ignore_pretraining_limits=True, device='cpu')",
+            "model.fit(X_train, y_train)",
+            "np.save(out, model.predict(X_test))",
+        ]))
+
+        _Xtr_che, _Xte_che = chemeleon_embed(
+            _train_full["smiles"].to_list(), _test_smiles, prefix="sub_tfn",
+        )
+        _ytr = _train_full[_TARGET_COL].to_numpy()
+
+        _f_Xtr = _tmp / "sub_Xtr.npy"; _f_ytr = _tmp / "sub_ytr.npy"
+        _f_Xte = _tmp / "sub_Xte.npy"; _f_out = _tmp / "sub_preds"
+        np.save(str(_f_Xtr), _Xtr_che); np.save(str(_f_ytr), _ytr)
+        np.save(str(_f_Xte), _Xte_che)
+        _res = subprocess.run(
+            [sys.executable, str(_TABPFN_SCRIPT),
+             str(_f_Xtr), str(_f_ytr), str(_f_Xte), str(_f_out)],
+            capture_output=True, text=True, cwd=str(Path("../").resolve()),
+        )
+        if _res.returncode != 0:
+            raise RuntimeError(f"TabPFN failed:\n{_res.stderr}")
+        _tfn_preds = np.load(str(_f_out) + ".npy")
+        for _p in [_f_Xtr, _f_ytr, _f_Xte, Path(str(_f_out) + ".npy")]:
+            _p.unlink(missing_ok=True)
+        _save_submission(_tfn_path, _tfn_preds)
+
+    # ── 2. CheMeleon HPO ──────────────────────────────────────────────────────
+    _ch_path = _SUB_DIR / "4_chemeleon_hpo_submission.csv"
+    if _ch_path.exists():
+        print(f"chemeleon_hpo: already exists — skipping.")
+    else:
+        _chemeleon_params = {
+            k: v for k, v in {**best_params, "epochs": 50}.items()
+            if k not in ("message_hidden_dim", "depth")
+        }
+        _ch_model = ChempropChemeleonModel(pred_type="regression", **_chemeleon_params)
+        _ch_model.train(
+            _train_sub["smiles"].to_list(), _train_sub[_TARGET_COL].to_numpy(),
+            _val_sub["smiles"].to_list(),   _val_sub[_TARGET_COL].to_numpy(),
+            target_col=_TARGET_COL,
+        )
+        _save_submission(_ch_path, _ch_model.predict(_test_smiles))
+        del _ch_model
+
+    # ── 3. Macau HPO on CheMeleon FP ─────────────────────────────────────────
+    _mac_path = _SUB_DIR / "4_macau_che_hpo_submission.csv"
+    if _mac_path.exists():
+        print(f"macau_che_hpo: already exists — skipping.")
+    else:
+        import optuna as _optuna
+        _optuna.logging.set_verbosity(_optuna.logging.WARNING)
+        _mac_study = _optuna.load_study(
+            study_name="macau_chemeleon_hpo",
+            storage="sqlite:///../predictions/4_hpo_macau_chemeleon.db",
+        )
+        _mac_best = _mac_study.best_params
+        _Xtr_mac, _Xte_mac = chemeleon_embed(
+            _train_full["smiles"].to_list(), _test_smiles, prefix="sub_mac",
+        )
+        _mac_model = MacauModel(seed=_SEED, **_mac_best)
+        _mac_model.train(_Xtr_mac, _train_full[_TARGET_COL].to_numpy())
+        _save_submission(_mac_path, _mac_model.predict(_Xte_mac))
+        del _mac_model
+
+    # ── 4. Ensemble test predictions — train cp, ch, xg, mc, tf ─────────────
+    # Individual test predictions for each ensemble component
+    _ens_preds: dict[str, np.ndarray] = {}
+
+    # cp — Chemprop HPO
+    _cp_cache = _tmp / "sub_ens_cp.npy"
+    if _cp_cache.exists():
+        _ens_preds["cp"] = np.load(str(_cp_cache))
+    else:
+        _cp_model = ChempropModel(pred_type="regression", **{**best_params, "epochs": 50})
+        _cp_model.train(
+            _train_sub["smiles"].to_list(), _train_sub[_TARGET_COL].to_numpy(),
+            _val_sub["smiles"].to_list(),   _val_sub[_TARGET_COL].to_numpy(),
+            target_col=_TARGET_COL,
+        )
+        _ens_preds["cp"] = _cp_model.predict(_test_smiles)
+        np.save(str(_cp_cache), _ens_preds["cp"])
+        del _cp_model
+
+    # ch — CheMeleon HPO (reuse if already trained above)
+    _ch_cache = _tmp / "sub_ens_ch.npy"
+    if _ch_cache.exists():
+        _ens_preds["ch"] = np.load(str(_ch_cache))
+    else:
+        _ch2 = ChempropChemeleonModel(pred_type="regression", **_chemeleon_params)
+        _ch2.train(
+            _train_sub["smiles"].to_list(), _train_sub[_TARGET_COL].to_numpy(),
+            _val_sub["smiles"].to_list(),   _val_sub[_TARGET_COL].to_numpy(),
+            target_col=_TARGET_COL,
+        )
+        _ens_preds["ch"] = _ch2.predict(_test_smiles)
+        np.save(str(_ch_cache), _ens_preds["ch"])
+        del _ch2
+
+    # xg — XGBoost HPO on Mordred
+    _xg_cache = _tmp / "sub_ens_xg.npy"
+    if _xg_cache.exists():
+        _ens_preds["xg"] = np.load(str(_xg_cache))
+    else:
+        import optuna as _optuna2
+        _optuna2.logging.set_verbosity(_optuna2.logging.WARNING)
+        _xgb_best = _optuna2.load_study(
+            study_name="xgb_mordred_hpo",
+            storage="sqlite:///../predictions/4_hpo_xgb_mordred.db",
+        ).best_params
+        _fp_tr = generate_fingerprint(_train_sub, "mordred")
+        _fp_va = generate_fingerprint(_val_sub, "mordred")
+        _fp_te = generate_fingerprint(
+            pl.DataFrame({"smiles": _test_smiles, "inchikey": _test_names,
+                          "molecule_names": _test_names}),
+            "mordred",
+        )
+        _Xtr_xg = extract_fp_matrix(_fp_tr, "mordred")
+        _Xva_xg = extract_fp_matrix(_fp_va, "mordred")
+        _Xte_xg = extract_fp_matrix(_fp_te, "mordred")
+        del _fp_tr, _fp_va, _fp_te
+        if np.isnan(_Xtr_xg).any():
+            _valid = ~np.isnan(_Xtr_xg).any(axis=0)
+            _Xtr_xg = _Xtr_xg[:, _valid]
+            _Xva_xg = _Xva_xg[:, _valid]
+            _Xte_xg = _Xte_xg[:, _valid]
+        _xg_model = BoostedTreesModel(pred_type="regression", **_xgb_best)
+        _xg_model.train(
+            _Xtr_xg, _train_sub[_TARGET_COL].to_numpy(),
+            _Xva_xg, _val_sub[_TARGET_COL].to_numpy(),
+        )
+        _ens_preds["xg"] = _xg_model.predict(_Xte_xg)
+        np.save(str(_xg_cache), _ens_preds["xg"])
+        del _xg_model, _Xtr_xg, _Xva_xg, _Xte_xg
+
+    # mc — Macau HPO on CheMeleon FP
+    _mc_cache = _tmp / "sub_ens_mc.npy"
+    if _mc_cache.exists():
+        _ens_preds["mc"] = np.load(str(_mc_cache))
+    else:
+        _Xtr_mc, _Xte_mc = chemeleon_embed(
+            _train_full["smiles"].to_list(), _test_smiles, prefix="sub_mc",
+        )
+        _mc_ens = MacauModel(seed=_SEED, **_mac_best)
+        _mc_ens.train(_Xtr_mc, _train_full[_TARGET_COL].to_numpy())
+        _ens_preds["mc"] = _mc_ens.predict(_Xte_mc)
+        del _mc_ens, _Xtr_mc, _Xte_mc
+        np.save(str(_mc_cache), _ens_preds["mc"])
+
+    # tf — TabPFN on CheMeleon FP
+    _tf_cache = _tmp / "sub_ens_tf.npy"
+    if _tf_cache.exists():
+        _ens_preds["tf"] = np.load(str(_tf_cache))
+    else:
+        _Xtr_tf, _Xte_tf = chemeleon_embed(
+            _train_full["smiles"].to_list(), _test_smiles, prefix="sub_tf",
+        )
+        _ytr_tf = _train_full[_TARGET_COL].to_numpy()
+        _f_Xtr2 = _tmp / "sub2_Xtr.npy"; _f_ytr2 = _tmp / "sub2_ytr.npy"
+        _f_Xte2 = _tmp / "sub2_Xte.npy"; _f_out2 = _tmp / "sub2_preds"
+        np.save(str(_f_Xtr2), _Xtr_tf); np.save(str(_f_ytr2), _ytr_tf)
+        np.save(str(_f_Xte2), _Xte_tf)
+        _res_tf = subprocess.run(
+            [sys.executable, str(_TABPFN_SCRIPT),
+             str(_f_Xtr2), str(_f_ytr2), str(_f_Xte2), str(_f_out2)],
+            capture_output=True, text=True, cwd=str(Path("../").resolve()),
+        )
+        if _res_tf.returncode != 0:
+            raise RuntimeError(f"TabPFN failed:\n{_res_tf.stderr}")
+        _ens_preds["tf"] = np.load(str(_f_out2) + ".npy")
+        for _p in [_f_Xtr2, _f_ytr2, _f_Xte2, Path(str(_f_out2) + ".npy")]:
+            _p.unlink(missing_ok=True)
+        np.save(str(_tf_cache), _ens_preds["tf"])
+
+    # ── 5. Write ensemble submissions ─────────────────────────────────────────
+    _W_MAP = {"0": 0.0, "15": 1/5, "14": 1/4, "13": 1/3, "12": 1/2,
+              "1": 1.0, "2": 2.0, "3": 3.0, "4": 4.0, "5": 5.0}
+    _ENS_TAGS = ["cp", "ch", "rf", "xg", "mc", "tf"]
+
+    for _ens_label in [
+        "cp4_ch5_rf0_xg1_mc0_tf5",
+        "cp4_ch5_rf0_xg1_mc1_tf5",
+        "cp5_ch5_rf0_xg13_mc1_tf5",
+    ]:
+        _ens_path = _SUB_DIR / f"4_ens_{_ens_label}_submission.csv"
+        if _ens_path.exists():
+            print(f"{_ens_path.name}: already exists — skipping.")
+            continue
+        _parts_ens = _ens_label.split("_")
+        _w_raw = {tag: _W_MAP[p[len(tag):]] for tag, p in zip(_ENS_TAGS, _parts_ens)}
+        _total = sum(_w_raw.values())
+        _ens_pred = sum(
+            _ens_preds[tag] * (w / _total)
+            for tag, w in _w_raw.items()
+            if w > 0
+        )
+        _save_submission(_ens_path, _ens_pred)
+
+    mo.md("## Submissions generated — see validation cell below.")
+    return
+
+
+@app.cell
+def _(Path, mo, np, pd):
+    """
+    Validate all submission files produced in this notebook.
+
+    Rules (matching the OpenADMET activity_validation.py spec):
+      - Required columns: SMILES, Molecule Name, pEC50
+      - No missing identifiers or duplicate Molecule Names
+      - pEC50 must be numeric and finite
+      - Exactly 513 rows
+    """
+    _ACTIVITY_DATASET_SIZE = 513
+    _SUB_DIR = Path("../submissions")
+
+    _SUBMISSION_FILES = [
+        _SUB_DIR / "4_tabpfn_chemeleon_submission.csv",
+        _SUB_DIR / "4_chemeleon_hpo_submission.csv",
+        _SUB_DIR / "4_macau_che_hpo_submission.csv",
+        _SUB_DIR / "4_ens_cp4_ch5_rf0_xg1_mc0_tf5_submission.csv",
+        _SUB_DIR / "4_ens_cp4_ch5_rf0_xg1_mc1_tf5_submission.csv",
+        _SUB_DIR / "4_ens_cp5_ch5_rf0_xg13_mc1_tf5_submission.csv",
+    ]
+
+    def _validate(path: Path) -> tuple[bool, list[str]]:
+        errors: list[str] = []
+        if not path.exists():
+            return False, [f"File does not exist: {path}"]
+        try:
+            df = pd.read_csv(path)
+        except Exception as exc:
+            return False, [f"Error reading CSV: {exc}"]
+
+        for col in ("SMILES", "Molecule Name", "pEC50"):
+            if col not in df.columns:
+                errors.append(f"Missing required column: '{col}'")
+        if errors:
+            return False, errors
+
+        if df.empty:
+            return False, ["Submission is empty."]
+
+        if df[["SMILES", "Molecule Name"]].isna().any(axis=1).sum():
+            errors.append("Row(s) with missing identifier values.")
+
+        if df["Molecule Name"].duplicated().sum():
+            errors.append(f"{df['Molecule Name'].duplicated().sum()} duplicated Molecule Name(s).")
+
+        _numeric = pd.to_numeric(df["pEC50"], errors="coerce")
+        if _numeric.isna().sum():
+            errors.append(f"pEC50 has {_numeric.isna().sum()} non-numeric value(s).")
+        elif not np.isfinite(_numeric.to_numpy()).all():
+            errors.append(f"pEC50 has non-finite value(s).")
+
+        if len(df) != _ACTIVITY_DATASET_SIZE:
+            errors.append(f"{len(df)} rows, expected {_ACTIVITY_DATASET_SIZE}.")
+
+        return len(errors) == 0, errors
+
+    _results = []
+    for _path in _SUBMISSION_FILES:
+        _ok, _errs = _validate(_path)
+        if _ok:
+            _results.append(mo.md(f"✓ **{_path.name}** — passed"))
+        else:
+            _results.append(mo.md(
+                f"✗ **{_path.name}** — FAILED:\n" + "\n".join(f"- {e}" for e in _errs)
+            ))
+
+    mo.vstack(_results)
     return
 
 
