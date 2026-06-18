@@ -33,6 +33,7 @@ seaborn==0.13.2
 networkx==3.6.1
 mols2grid==2.2.0
 matplotlib-venn==1.1.2
+upsetplot==0.9.0
 
 # Hyperparameter optimisation
 optuna==4.8.0
