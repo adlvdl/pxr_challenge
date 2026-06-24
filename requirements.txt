@@ -5,10 +5,11 @@
 #   pip install -r requirements.txt
 
 # Notebook runtime
-marimo==0.22.5
+marimo==0.23.9
 
 # Data manipulation
 polars==1.39.3
+pandas==2.3.3
 numpy==1.26.4
 
 # Cheminformatics
@@ -20,10 +21,12 @@ mmpdb==3.1.4
 scikit-learn==1.8.0
 umap-learn==0.5.11
 scipy==1.17.1
-lightgbm==4.6.0
 chemprop==2.2.3
 lightning==2.6.1
 torch==2.11.0
+xgboost==3.2.0
+smurff==1.1
+tabpfn==7.1.1
 joblib==1.5.3
 
 # Visualisation
@@ -44,3 +47,4 @@ statsmodels==0.14.6
 
 # Utilities
 tqdm==4.67.3
+python-dotenv==1.2.2
