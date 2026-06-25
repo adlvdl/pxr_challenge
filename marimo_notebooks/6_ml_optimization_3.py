@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.5"
 app = marimo.App(width="medium")
 
 
@@ -1336,7 +1336,7 @@ def _(PLOTS_DIR, bias_by_bin_table, calib_cv, mo, pl, plot_bias_heatmap):
     return
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(mo):
     mo.md(r"""
     While the methods we used worked in that the bias is closer to zero in all cases, the effect is very small.
@@ -2041,7 +2041,7 @@ def _(PLOTS_DIR, PRED_DIR, mean_absolute_error, mo, oversampling_cv, pl, plt):
     return (oversampling_summary,)
 
 
-@app.cell(hide_code=True)
+@app.cell
 def _(mo):
     mo.md(r"""
     While oversampling reduces bias in the extremes of the distribution in a more impactful way than previous methods, in general all models perform much worse. tabPFN see some of the biggest decreases in performance and also see an increase in the bias
@@ -2816,17 +2816,7 @@ def _(mo):
 
 
 @app.cell
-def _(
-    Optional,
-    Path,
-    np,
-    pl,
-    shutil,
-    subprocess,
-    sys,
-    tempfile,
-    torch,
-):
+def _(Optional, Path, np, pl, shutil, subprocess, sys, tempfile, torch):
     # ── Chemprop model classes for Analysis 6 (scratch + CheMeleon) ─────────────
     # Both mirror notebook 4's implementations: full HPO parameter surface passed
     # as CLI args.  Shared helpers are cell-private; the two classes are exported.
@@ -3077,170 +3067,176 @@ def _(
     _SUB_DIR = Path("../submissions")
     _SUB_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Counter-filter: remove compounds where counter pEC50 >= PXR pEC50
-    _rm_idx = counter_remove(filter_train)
-    _keep_idx = sorted(set(range(filter_train.shape[0])) - _rm_idx)
-    _train_filtered = filter_train[_keep_idx].select(
-        ["smiles", "inchikey", "molecule_names", _TARGET_COL])
-    print(f"Counter-filtered: {filter_train.shape[0]} → {_train_filtered.shape[0]} "
-          f"(removed {len(_rm_idx)})")
+    _SUB_DEFAULT = _SUB_DIR / "6_ens_default_augfilt_submission.csv"
+    _SUB_HPO = _SUB_DIR / "6_ens_hpo_augfilt_submission.csv"
 
-    # Augment with semi-pure compounds (excluding any already in training)
-    _existing_iks = set(_train_filtered["inchikey"].to_list())
-    _sp_new = semipure.filter(~pl.col("inchikey").is_in(list(_existing_iks)))
-    _train_aug = pl.concat([
-        _train_filtered,
-        _sp_new.select([
-            "smiles", "inchikey",
-            pl.lit("").alias("molecule_names"),
-            pl.col("pEC50_corrected").alias(_TARGET_COL),
-        ]),
-    ])
-    print(f"Augmented: {_train_filtered.shape[0]} + {_sp_new.shape[0]} semi-pure "
-          f"= {_train_aug.shape[0]}")
+    if _SUB_DEFAULT.exists() and _SUB_HPO.exists():
+        _ens_subs = {
+            "default": pl.read_csv(_SUB_DEFAULT),
+            "hpo": pl.read_csv(_SUB_HPO),
+        }
+        print(f"Found {_SUB_DEFAULT.name} and {_SUB_HPO.name} — skipping Analysis 6 training.")
+    else:
+        # ── Ensemble weights (same as submitted: cp5·ch5·rf0·xg⅓·mc1·tf5) ──────
+        _ENS_WEIGHTS = {"cp": 5.0, "ch": 5.0, "xg": 1.0 / 3.0, "mc": 1.0, "tf": 5.0}
+        _W_TOTAL = sum(_ENS_WEIGHTS.values())
 
-    # 10% val split for early stopping
-    _rng = np.random.default_rng(_SEED)
-    _n = len(_train_aug)
-    _val_idx = _rng.choice(_n, size=int(_n * 0.1), replace=False)
-    _tr_idx = np.setdiff1d(np.arange(_n), _val_idx)
-    _train_sub = _train_aug[_tr_idx.tolist()]
-    _val_sub = _train_aug[_val_idx.tolist()]
+        # Counter-filter: remove compounds where counter pEC50 >= PXR pEC50
+        _rm_idx = counter_remove(filter_train)
+        _keep_idx = sorted(set(range(filter_train.shape[0])) - _rm_idx)
+        _train_filtered = filter_train[_keep_idx].select(
+            ["smiles", "inchikey", "molecule_names", _TARGET_COL])
+        print(f"Counter-filtered: {filter_train.shape[0]} → {_train_filtered.shape[0]} "
+              f"(removed {len(_rm_idx)})")
 
-    # Test set
-    _test_df = pl.read_csv("../data/raw/20260409/dose_response_test.csv")
-    _test_smiles = _test_df["SMILES"].to_list()
-    _test_names = _test_df["Molecule Name"].to_list()
+        # Augment with semi-pure compounds (excluding any already in training)
+        _existing_iks = set(_train_filtered["inchikey"].to_list())
+        _sp_new = semipure.filter(~pl.col("inchikey").is_in(list(_existing_iks)))
+        _train_aug = pl.concat([
+            _train_filtered,
+            _sp_new.select([
+                "smiles", "inchikey",
+                pl.lit("").alias("molecule_names"),
+                pl.col("pEC50_corrected").alias(_TARGET_COL),
+            ]),
+        ])
+        print(f"Augmented: {_train_filtered.shape[0]} + {_sp_new.shape[0]} semi-pure "
+              f"= {_train_aug.shape[0]}")
 
-    # ── Features ────────────────────────────────────────────────────────────────
-    # Mordred fingerprints
-    _fp_tr = generate_fingerprint(_train_sub, "mordred")
-    _fp_va = generate_fingerprint(_val_sub, "mordred")
-    _fp_te = generate_fingerprint(
-        pl.DataFrame({"smiles": _test_smiles, "inchikey": _test_names,
-                      "molecule_names": _test_names}), "mordred")
-    _Xtr_mor = extract_fp_matrix(_fp_tr, "mordred")
-    _Xva_mor = extract_fp_matrix(_fp_va, "mordred")
-    _Xte_mor = extract_fp_matrix(_fp_te, "mordred")
-    del _fp_tr, _fp_va, _fp_te
-    # Drop NaN columns (consistent mask across train/val/test)
-    _valid_mor = ~np.isnan(_Xtr_mor).any(axis=0)
-    _Xtr_mor = _Xtr_mor[:, _valid_mor]
-    _Xva_mor = _Xva_mor[:, _valid_mor]
-    _Xte_mor = _Xte_mor[:, _valid_mor]
+        # 10% val split for early stopping
+        _rng = np.random.default_rng(_SEED)
+        _n = len(_train_aug)
+        _val_idx = _rng.choice(_n, size=int(_n * 0.1), replace=False)
+        _tr_idx = np.setdiff1d(np.arange(_n), _val_idx)
+        _train_sub = _train_aug[_tr_idx.tolist()]
+        _val_sub = _train_aug[_val_idx.tolist()]
 
-    # CheMeleon embeddings
-    _Xtr_che_full, _Xte_che = chemeleon_embed(
-        _train_aug["smiles"].to_list(), _test_smiles, prefix="a6_ens")
-    _Xtr_che = _Xtr_che_full[_tr_idx]
-    _Xva_che = _Xtr_che_full[_val_idx]
+        # Test set
+        _test_df = pl.read_csv("../data/raw/20260409/dose_response_test.csv")
+        _test_smiles = _test_df["SMILES"].to_list()
+        _test_names = _test_df["Molecule Name"].to_list()
 
-    _y_tr = _train_sub[_TARGET_COL].to_numpy()
-    _y_va = _val_sub[_TARGET_COL].to_numpy()
-    _y_full = _train_aug[_TARGET_COL].to_numpy()
+        # ── Features ────────────────────────────────────────────────────────────
+        # Mordred fingerprints
+        _fp_tr = generate_fingerprint(_train_sub, "mordred")
+        _fp_va = generate_fingerprint(_val_sub, "mordred")
+        _fp_te = generate_fingerprint(
+            pl.DataFrame({"smiles": _test_smiles, "inchikey": _test_names,
+                          "molecule_names": _test_names}), "mordred")
+        _Xtr_mor = extract_fp_matrix(_fp_tr, "mordred")
+        _Xva_mor = extract_fp_matrix(_fp_va, "mordred")
+        _Xte_mor = extract_fp_matrix(_fp_te, "mordred")
+        del _fp_tr, _fp_va, _fp_te
+        # Drop NaN columns (consistent mask across train/val/test)
+        _valid_mor = ~np.isnan(_Xtr_mor).any(axis=0)
+        _Xtr_mor = _Xtr_mor[:, _valid_mor]
+        _Xva_mor = _Xva_mor[:, _valid_mor]
+        _Xte_mor = _Xte_mor[:, _valid_mor]
 
-    # ── Ensemble weights (same as submitted: cp5·ch5·rf0·xg⅓·mc1·tf5) ──────────
-    _ENS_WEIGHTS = {"cp": 5.0, "ch": 5.0, "xg": 1.0 / 3.0, "mc": 1.0, "tf": 5.0}
-    _W_TOTAL = sum(_ENS_WEIGHTS.values())
+        # CheMeleon embeddings
+        _Xtr_che_full, _Xte_che = chemeleon_embed(
+            _train_aug["smiles"].to_list(), _test_smiles, prefix="a6_ens")
+        _Xtr_che = _Xtr_che_full[_tr_idx]
+        _Xva_che = _Xtr_che_full[_val_idx]
 
-    # ── HPO best parameters ─────────────────────────────────────────────────────
-    # Chemprop scratch HPO: all params including message_hidden_dim and depth
-    _CHEMPROP_HPO = {
-        "epochs": 50, "batch_size": 32, "dropout": 0.0,
-        "ffn_hidden_dim": 1024, "ffn_num_layers": 4,
-        "max_lr": 0.00014521767021847913,
-    }
-    # CheMeleon HPO: same as chemprop but without encoder architecture params
-    # (fixed by the CheMeleon backbone)
-    _CHEMELEON_HPO = {
-        k: v for k, v in _CHEMPROP_HPO.items()
-        if k not in ("message_hidden_dim", "depth")
-    }
-    _XGB_HPO = {
-        "colsample_bytree": 0.7280642324424045,
-        "learning_rate": 0.019940375676697552,
-        "max_depth": 5, "n_estimators": 800,
-        "reg_alpha": 0.006750974160271454,
-        "subsample": 0.7328142736138993,
-    }
-    _MACAU_HPO = {"burnin": 400, "nsamples": 700, "num_latent": 8}
+        _y_tr = _train_sub[_TARGET_COL].to_numpy()
+        _y_va = _val_sub[_TARGET_COL].to_numpy()
+        _y_full = _train_aug[_TARGET_COL].to_numpy()
 
-    # ── Train both ensemble variants ────────────────────────────────────────────
-    _results: dict[str, dict[str, np.ndarray]] = {}
+        # ── HPO best parameters ─────────────────────────────────────────────────
+        _CHEMPROP_HPO = {
+            "epochs": 50, "batch_size": 32, "dropout": 0.0,
+            "ffn_hidden_dim": 1024, "ffn_num_layers": 4,
+            "max_lr": 0.00014521767021847913,
+        }
+        _CHEMELEON_HPO = {
+            k: v for k, v in _CHEMPROP_HPO.items()
+            if k not in ("message_hidden_dim", "depth")
+        }
+        _XGB_HPO = {
+            "colsample_bytree": 0.7280642324424045,
+            "learning_rate": 0.019940375676697552,
+            "max_depth": 5, "n_estimators": 800,
+            "reg_alpha": 0.006750974160271454,
+            "subsample": 0.7328142736138993,
+        }
+        _MACAU_HPO = {"burnin": 400, "nsamples": 700, "num_latent": 8}
 
-    for _variant, _config in [
-        ("default", {
-            "cp_kw": {"epochs": 50},
-            "ch_kw": {},
-            "xg_kw": {},
-            "mc_kw": {"seed": _SEED},
-        }),
-        ("hpo", {
-            "cp_kw": _CHEMPROP_HPO,
-            "ch_kw": _CHEMELEON_HPO,
-            "xg_kw": _XGB_HPO,
-            "mc_kw": {"seed": _SEED, **_MACAU_HPO},
-        }),
-    ]:
-        print(f"\n{'=' * 50}\nTraining {_variant} ensemble\n{'=' * 50}")
-        _preds: dict[str, np.ndarray] = {}
+        # ── Train both ensemble variants ────────────────────────────────────────
+        _ens_subs = {}
 
-        # cp — Chemprop scratch
-        print(f"  [{_variant}] cp — Chemprop scratch …")
-        _cp = ChempropScratchModel(pred_type="regression", **_config["cp_kw"])
-        _cp.train(
-            _train_sub["smiles"].to_list(), _y_tr,
-            _val_sub["smiles"].to_list(), _y_va,
-            target_col=_TARGET_COL,
-        )
-        _preds["cp"] = _cp.predict(_test_smiles)
-        del _cp; gc.collect()
+        for _variant, _config in [
+            ("default", {
+                "cp_kw": {"epochs": 50},
+                "ch_kw": {},
+                "xg_kw": {},
+                "mc_kw": {"seed": _SEED},
+            }),
+            ("hpo", {
+                "cp_kw": _CHEMPROP_HPO,
+                "ch_kw": _CHEMELEON_HPO,
+                "xg_kw": _XGB_HPO,
+                "mc_kw": {"seed": _SEED, **_MACAU_HPO},
+            }),
+        ]:
+            print(f"\n{'=' * 50}\nTraining {_variant} ensemble\n{'=' * 50}")
+            _preds: dict[str, np.ndarray] = {}
 
-        # ch — CheMeleon fine-tuned
-        print(f"  [{_variant}] ch — CheMeleon …")
-        _ch = ChempropChemeleonModel(pred_type="regression", **_config["ch_kw"])
-        _ch.train(
-            _train_sub["smiles"].to_list(), _y_tr,
-            _val_sub["smiles"].to_list(), _y_va,
-            target_col=_TARGET_COL,
-        )
-        _preds["ch"] = _ch.predict(_test_smiles)
-        del _ch; gc.collect()
+            # cp — Chemprop scratch
+            print(f"  [{_variant}] cp — Chemprop scratch …")
+            _cp = ChempropScratchModel(pred_type="regression", **_config["cp_kw"])
+            _cp.train(
+                _train_sub["smiles"].to_list(), _y_tr,
+                _val_sub["smiles"].to_list(), _y_va,
+                target_col=_TARGET_COL,
+            )
+            _preds["cp"] = _cp.predict(_test_smiles)
+            del _cp; gc.collect()
 
-        # xg — XGBoost on Mordred
-        print(f"  [{_variant}] xg — XGBoost Mordred …")
-        _xg = BoostedTreesModel(pred_type="regression", **_config["xg_kw"])
-        _xg.train(_Xtr_mor, _y_tr, _Xva_mor, _y_va)
-        _preds["xg"] = _xg.predict(_Xte_mor)
-        del _xg; gc.collect()
+            # ch — CheMeleon fine-tuned
+            print(f"  [{_variant}] ch — CheMeleon …")
+            _ch = ChempropChemeleonModel(pred_type="regression", **_config["ch_kw"])
+            _ch.train(
+                _train_sub["smiles"].to_list(), _y_tr,
+                _val_sub["smiles"].to_list(), _y_va,
+                target_col=_TARGET_COL,
+            )
+            _preds["ch"] = _ch.predict(_test_smiles)
+            del _ch; gc.collect()
 
-        # mc — Macau on CheMeleon FP (uses full training set, no early stopping)
-        print(f"  [{_variant}] mc — Macau CheMeleon …")
-        _mc = MacauModel(**_config["mc_kw"])
-        _mc.train(_Xtr_che_full, _y_full)
-        _preds["mc"] = _mc.predict(_Xte_che)
-        del _mc; gc.collect()
+            # xg — XGBoost on Mordred
+            print(f"  [{_variant}] xg — XGBoost Mordred …")
+            _xg = BoostedTreesModel(pred_type="regression", **_config["xg_kw"])
+            _xg.train(_Xtr_mor, _y_tr, _Xva_mor, _y_va)
+            _preds["xg"] = _xg.predict(_Xte_mor)
+            del _xg; gc.collect()
 
-        # tf — TabPFN on CheMeleon FP (no HPO — in-context model)
-        print(f"  [{_variant}] tf — TabPFN CheMeleon …")
-        _preds["tf"] = tabpfn_predict(_Xtr_che_full, _y_full, _Xte_che)
-        gc.collect()
+            # mc — Macau on CheMeleon FP (uses full training set, no early stopping)
+            print(f"  [{_variant}] mc — Macau CheMeleon …")
+            _mc = MacauModel(**_config["mc_kw"])
+            _mc.train(_Xtr_che_full, _y_full)
+            _preds["mc"] = _mc.predict(_Xte_che)
+            del _mc; gc.collect()
 
-        _results[_variant] = _preds
+            # tf — TabPFN on CheMeleon FP (no HPO — in-context model)
+            print(f"  [{_variant}] tf — TabPFN CheMeleon …")
+            _preds["tf"] = tabpfn_predict(_Xtr_che_full, _y_full, _Xte_che)
+            gc.collect()
 
-        # Compute weighted ensemble
-        _ens_pred = sum(
-            _preds[tag] * (w / _W_TOTAL)
-            for tag, w in _ENS_WEIGHTS.items()
-        )
-        # Save submission
-        _sub_path = _SUB_DIR / f"6_ens_{_variant}_augfilt_submission.csv"
-        pl.DataFrame({
-            "SMILES": _test_smiles,
-            "Molecule Name": _test_names,
-            "pEC50": _ens_pred.tolist(),
-        }).write_csv(_sub_path)
-        print(f"  → {_sub_path.name}")
+            # Compute weighted ensemble and save submission
+            _ens_pred = sum(
+                _preds[tag] * (w / _W_TOTAL)
+                for tag, w in _ENS_WEIGHTS.items()
+            )
+            _sub_df = pl.DataFrame({
+                "SMILES": _test_smiles,
+                "Molecule Name": _test_names,
+                "pEC50": _ens_pred.tolist(),
+            })
+            _sub_path = _SUB_DIR / f"6_ens_{_variant}_augfilt_submission.csv"
+            _sub_df.write_csv(_sub_path)
+            _ens_subs[_variant] = _sub_df
+            print(f"  → {_sub_path.name}")
 
     # ── Evaluate on unblinded test set ──────────────────────────────────────────
     _eval_rows = []
@@ -3257,15 +3253,8 @@ def _(
     })
 
     for _variant in ["default", "hpo"]:
-        _ens_pred = sum(
-            _results[_variant][tag] * (w / _W_TOTAL)
-            for tag, w in _ENS_WEIGHTS.items()
-        )
-        # Join with unblinded to align compounds
-        _pred_df = pl.DataFrame({
-            "Molecule Name": _test_names,
-            "pEC50_new": _ens_pred.tolist(),
-        })
+        _pred_df = _ens_subs[_variant].select(["Molecule Name", "pEC50"]).rename(
+            {"pEC50": "pEC50_new"})
         _joined = unblinded_eval.join(_pred_df, on="Molecule Name", how="inner")
         _yt_j = _joined["pEC50_true"].to_numpy()
         _yp_j = _joined["pEC50_new"].to_numpy()
