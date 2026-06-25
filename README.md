@@ -7,8 +7,7 @@ https://openadmet.ghost.io/announcing-the-next-openadmet-blind-challenge-predict
 
 **Result at a glance:** the Phase-1 submission (a six-model weighted ensemble)
 achieved **0.495 MAE** on the unblinded Phase-1 test set, ranking **~78 of 252**
-(top third). See [Final submission](#final-submission) for the model details. This
-repository is released under the [MIT License](LICENSE).
+(top third). See [Final submission](#final-submission) for the model details. 
 
 # Why am I doing this?
 
