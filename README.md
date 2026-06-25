@@ -191,12 +191,12 @@ re-running the slow steps.
 
 ```bash
 # 1. Clone the repo
-git clone <repo-url>
+git clone https://github.com/adlvdl/pxr_challenge
 cd pxr_challenge
 
 # 2. Create a virtual environment and install all dependencies
 python3.14 -m venv .venv
-source .venv/bin/activate          # Windows: .venv\Scripts\activate
+source .venv/bin/activate          
 
 pip install -r requirements.txt
 ```
